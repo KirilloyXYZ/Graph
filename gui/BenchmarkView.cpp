@@ -8,6 +8,7 @@
 #include <limits>
 #include <map>
 #include <sstream>
+#include <tuple>
 
 #include "GuiStyle.hpp"
 
@@ -104,7 +105,7 @@ BenchmarkView::Point BenchmarkView::Summarize(BenchmarkReport report, std::size_
         auto& record = point.report.records.Get(i);
         record.series = series;
         record.source = source;
-        auto& values = record.method == TraversalMethod::BreadthFirst ? point.bfs : point.dfs;
+        auto& values = record.algorithm == "BFS" ? point.bfs : point.dfs;
         values.minimum = std::min(values.minimum, record.milliseconds);
         values.maximum = std::max(values.maximum, record.milliseconds);
     }
@@ -158,7 +159,7 @@ void BenchmarkView::Start(GuiTask& job, const GraphView& network, const GraphVie
         {
             const auto& graph = input->graph;
             ArraySequence<StationId> keys;
-            ArraySequence<ChannelKey> edges;
+            ArraySequence<InterplanetaryNetwork::WeightedEdge> edges;
             bool needCopies = std::any_of(selectedOrders.begin(), selectedOrders.end(),
                                           [](auto value) { return value != EdgeOrder::Current; });
             if (needCopies && !task.Stopping())
@@ -166,7 +167,11 @@ void BenchmarkView::Start(GuiTask& job, const GraphView& network, const GraphVie
                 keys.Reserve(graph.GetVertexCount());
                 edges.Reserve(graph.GetEdgeCount());
                 for (std::size_t i = 0; i < graph.GetVertexCount(); ++i) { keys.Append(graph.GetVertexKey(i)); }
-                graph.ForEachEdge([&](const auto& u, const auto& v) { edges.Append(MakeChannelKey(u, v)); });
+                graph.ForEachWeightedEdge([&](std::size_t u, std::size_t v, double weight)
+                {
+                    auto [first, second] = MakeChannelKey(graph.GetVertexKey(u), graph.GetVertexKey(v));
+                    edges.Append({std::move(first), std::move(second), weight});
+                });
             }
             for (auto order : selectedOrders)
             {
@@ -176,7 +181,11 @@ void BenchmarkView::Start(GuiTask& job, const GraphView& network, const GraphVie
                 if (order == EdgeOrder::Current) { add(CompareAlgorithms(graph, config.task, seed, config.repeats, parameters, control)); }
                 else
                 {
-                    auto arranged = benchmark_detail::ArrangeEdges(edges, order, config.shuffleSeed);
+                    auto arranged = benchmark_detail::ArrangeEdges(edges, order, config.shuffleSeed,
+                        [](const auto& left, const auto& right)
+                        {
+                            return std::tie(left.first, left.second) < std::tie(right.first, right.second);
+                        });
                     InterplanetaryNetwork reordered(keys, arranged, std::make_unique<TreeDictionary<StationId, std::size_t>>(), CreateArraySequence, CreateArraySequence);
                     add(CompareAlgorithms(reordered, config.task, seed, config.repeats, parameters, control));
                 }
@@ -630,7 +639,7 @@ void BenchmarkView::DrawSamples(const Point& point)
             const auto& run = result.records.Get(static_cast<std::size_t>(i));
             ImGui::TableNextRow();
             NumericCell("%zu", run.repeat);
-            TextCell(run.method == TraversalMethod::BreadthFirst ? "BFS" : "DFS");
+            TextCell(run.algorithm.data());
             ImGui::TableNextColumn();
             ImGui::Text("%.9f", run.milliseconds);
         }

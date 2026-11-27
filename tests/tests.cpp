@@ -1,3 +1,4 @@
+#include <cmath>
 #include <cstddef>
 #include <initializer_list>
 #include <iostream>
@@ -19,8 +20,8 @@
 namespace
 {
     using NumericGraph = Graph<std::size_t>;
-    constexpr auto BFS = TraversalMethod::BreadthFirst;
-    constexpr auto DFS = TraversalMethod::DepthFirst;
+    constexpr auto BFS = CreateBFSEnumerator<std::size_t>;
+    constexpr auto DFS = CreateDFSEnumerator<std::size_t>;
 
     void Check(bool condition, const char* message)
     {
@@ -260,7 +261,7 @@ namespace
         CheckThrows<std::out_of_range>([&]() { Traverse(graph, graph.GetVertexCount(), DFS); });
         CheckThrows<std::invalid_argument>([&]()
         {
-            FindConnectedComponents(graph, static_cast<TraversalMethod>(7));
+            FindConnectedComponents(graph, TraversalFactory<std::size_t>{});
         });
 
         graph.RemoveVertex(3);
@@ -330,7 +331,7 @@ namespace
         Check(graph.ContainsEdge(Key(19), Key(29)), "Lookup follows custom comparator");
         CheckThrows<std::invalid_argument>([&]() { graph.AddVertex(Key(19)); });
         CheckThrows<std::invalid_argument>([&]() { graph.AddEdge(Key(11), Key(19)); });
-        auto tree = FindSpanningTree(graph, 0, DFS);
+        auto tree = FindSpanningTree(graph, 0, CreateDFSEnumerator<Key>);
         Check(tree.edges.GetLength() == 2 && tree.order.Get(1)->value == 21, "Copy-constructible key in result");
         auto copy = graph;
         copy.RemoveVertex(Key(22));
@@ -411,6 +412,172 @@ namespace
               "Failed vertex rebuild preserves graph");
         numeric.RemoveVertex(4);
         Check(!numeric.ContainsVertex(4) && numeric.GetEdgeCount() == 2, "Retry after failed rebuild");
+    }
+
+    template<typename Dictionary>
+    void TestWeightedGraph()
+    {
+        const std::size_t keys[]{10, 20, 30};
+        const NumericGraph::WeightedEdge edges[]{{10, 30, 4.5}, {20, 30, -2}};
+        NumericGraph graph(ArraySequence<std::size_t>(keys, 3), ArraySequence<NumericGraph::WeightedEdge>(edges, 2),
+                           std::make_unique<Dictionary>(), CreateArraySequence, CreateArraySequence);
+        Check(graph.GetNeighborWeight(0, 0) == 4.5 && graph.GetNeighborWeight(2, 0) == 4.5,
+              "Both adjacency entries carry the weight");
+        Check(graph.GetEdgeWeight(20, 30) == -2 && graph.GetEdgeWeight(30, 20) == -2, "Weight lookup is symmetric");
+        CheckThrows<std::invalid_argument>([&] { graph.AddEdge(30, 10, 100); });
+        CheckThrows<std::out_of_range>([&] { graph.SetEdgeWeight(10, 20, 1); });
+        CheckThrows<std::out_of_range>([&] { graph.GetEdgeWeight(10, 10); });
+
+        graph.AddEdge(10, 20);
+        Check(graph.GetEdgeWeight(10, 20) == 1, "Unit weight for an implicit edge");
+        auto copy = graph;
+        copy.SetEdgeWeight(30, 10, 0);
+        Check(copy.GetNeighborWeight(0, 0) == 0 && copy.GetNeighborWeight(2, 0) == 0 &&
+              graph.GetEdgeWeight(10, 30) == 4.5, "Update changes both entries and keeps the original graph");
+        copy.RemoveVertex(20);
+        Check(copy.GetNeighborIndex(0, 0) == 1 && copy.GetEdgeWeight(30, 10) == 0, "Reindexing preserves the weight");
+        copy.RemoveEdge(10, 30);
+        Check(copy.GetEdgeCount() == 0 && copy.GetNeighborCount(0) == 0 && copy.GetNeighborCount(1) == 0,
+              "Weighted removal clears both entries");
+
+        std::size_t seen = 0;
+        graph.ForEachWeightedEdge([&](std::size_t u, std::size_t v, double weight)
+        {
+            Check(u < v && weight == graph.GetEdgeWeight(graph.GetVertexKey(u), graph.GetVertexKey(v)),
+                  "Enumeration yields canonical indices and original weights");
+            ++seen;
+        });
+        Check(seen == graph.GetEdgeCount(), "Enumeration yields each edge once");
+    }
+
+    struct CustomWeight
+    {
+        struct Value { int number; };
+        int number = 0;
+        static int copiesBeforeFailure;
+
+        CustomWeight() noexcept = default;
+        explicit CustomWeight(Value value) : number(value.number) { }
+        CustomWeight(const CustomWeight& other) : number(other.number)
+        {
+            if (copiesBeforeFailure == 0) { throw std::runtime_error("Injected weight copy failure"); }
+            if (copiesBeforeFailure > 0) { --copiesBeforeFailure; }
+        }
+        CustomWeight& operator=(const CustomWeight&) noexcept = default;
+    };
+
+    int CustomWeight::copiesBeforeFailure = -1;
+
+    void TestCustomWeightAndMinimumSpanningTree()
+    {
+        static_assert(!std::is_constructible_v<CustomWeight, int>);
+        using GraphType = Graph<std::size_t, CustomWeight>;
+        GraphType graph(std::make_unique<ArrayStorage<std::size_t>>(), CreateArraySequence, CreateArraySequence);
+        auto compare = [](const CustomWeight& left, const CustomWeight& right) { return left.number < right.number; };
+        Check(FindMinimumSpanningTree(graph, compare).status == SpanningTreeStatus::Empty, "Empty minimum spanning tree");
+        graph.AddVertex(1);
+        auto single = FindMinimumSpanningTree(graph, compare);
+        Check(single.status == SpanningTreeStatus::Found && single.vertices.GetLength() == 1 &&
+              single.edges.GetLength() == 0, "A singleton is its own minimum spanning tree");
+
+        for (std::size_t key : {2, 3, 4}) { graph.AddVertex(key); }
+        graph.AddEdge(1, 2, CustomWeight({9}));
+        CustomWeight::copiesBeforeFailure = 1;
+        CheckThrows<std::runtime_error>([&] { graph.AddEdge(1, 3, CustomWeight({0})); });
+        Check(graph.GetEdgeCount() == 1 && !graph.ContainsEdge(1, 3), "Failed weight preparation leaves no half-edge");
+        CheckThrows<std::runtime_error>([&] { graph.SetEdgeWeight(1, 2, CustomWeight({0})); });
+        CustomWeight::copiesBeforeFailure = -1;
+        Check(graph.GetNeighborWeight(0, 0).number == 9 && graph.GetNeighborWeight(1, 0).number == 9,
+              "Failed replacement keeps both weights");
+        graph.AddEdge(1, 3, CustomWeight({0}));
+        graph.AddEdge(2, 3, CustomWeight({-2}));
+        auto disconnected = FindMinimumSpanningTree(graph, compare);
+        Check(disconnected.status == SpanningTreeStatus::Disconnected && disconnected.edges.GetLength() == 0,
+              "A partial forest is not a spanning tree");
+
+        graph.AddEdge(3, 4, CustomWeight({0}));
+        graph.AddEdge(1, 4, CustomWeight({0}));
+        auto ordinary = FindSpanningTree(graph, 0, CreateBFSEnumerator<std::size_t, CustomWeight>);
+        auto tree = FindMinimumSpanningTree(graph, compare);
+        Check(ordinary.edges.GetLength() == 3 && tree.status == SpanningTreeStatus::Found &&
+              tree.edges.GetLength() == 3, "Both kinds of spanning tree cover all vertices");
+        Check(tree.edges.Get(0).weight.number == -2 &&
+              tree.edges.Get(1).first == 0 && tree.edges.Get(1).second == 2 &&
+              tree.edges.Get(2).first == 0 && tree.edges.Get(2).second == 3,
+              "Kruskal chooses the minimum weights and resolves ties by endpoint indices");
+        graph.SetEdgeWeight(2, 3, CustomWeight({8}));
+        Check(tree.edges.Get(0).weight.number == -2 && graph.GetEdgeWeight(2, 3).number == 8,
+              "Minimum spanning tree owns its weights");
+    }
+
+    void TestTraversalEnumerators()
+    {
+        auto graph = MakeNumericGraph<ArrayStorage<std::size_t>>();
+        for (std::size_t key : {10, 20, 30, 40}) { graph.AddVertex(key); }
+        graph.AddEdge(10, 20, 40);
+        graph.AddEdge(10, 30, 8);
+        graph.AddEdge(20, 40, 1);
+        graph.AddEdge(30, 40, 2);
+        for (auto create : {BFS, DFS})
+        {
+            auto marks = graph_detail::CreateMarks(4);
+            auto cursor = create(graph, 0, marks);
+            CheckThrows<std::out_of_range>([&] { cursor->GetCurrent(); });
+            CheckThrows<std::out_of_range>([&] { cursor->GetCurrentKey(); });
+            Check(cursor->MoveNext() && cursor->GetCurrentKey() == 10 && !cursor->GetCurrent().parent &&
+                  marks.Get(0) && !marks.Get(1) && !marks.Get(2) && !marks.Get(3),
+                  "First step discovers only the root");
+            Check(cursor->MoveNext() && cursor->GetCurrent().vertex == 1 && cursor->GetCurrent().parent == 0,
+                  "Second step carries its parent index");
+            auto next = create == BFS ? std::size_t{2} : std::size_t{3};
+            auto parent = create == BFS ? std::size_t{0} : std::size_t{1};
+            Check(cursor->MoveNext() && cursor->GetCurrent().vertex == next && cursor->GetCurrent().parent == parent,
+                  "Enumerator resumes its frontier");
+            Check(cursor->MoveNext() && !cursor->MoveNext() && !cursor->MoveNext(), "Completed enumeration stays ended");
+            CheckThrows<std::out_of_range>([&] { cursor->GetCurrent(); });
+            CheckThrows<std::out_of_range>([&] { cursor->GetCurrentKey(); });
+        }
+    }
+
+    void TestNetworkDesign()
+    {
+        const StationId keys[]{"A", "B", "C"};
+        const ChannelKey longEdge[]{{"A", "C"}};
+        ArraySequence<StationId> vertices(keys, 3);
+        const std::size_t earth = 2;
+        std::vector<Placement> placements{{{0, 0}, earth}, {{3, 0}, earth}, {{3, 4}, earth}};
+        auto source = BuildDocument(vertices, ArraySequence<ChannelKey>{}, true, placements);
+        ArraySequence<WorldPoint> positions;
+        for (const auto& key : keys) { positions.Append(source->StationPosition(key)); }
+        auto design = DesignNetwork(source->graph, positions);
+        Check(design && design->status == SpanningTreeStatus::Found && design->channels.GetLength() == 2 &&
+              design->totalLength == 7 && source->graph.GetEdgeCount() == 0,
+              "Project connects isolated stations with the minimum total map distance");
+        auto applied = ApplyNetworkDesign(*source, *design);
+        Check(applied->Status() == NetworkStatus::Connected && applied->graph.GetEdgeWeight("A", "B") == 3 &&
+              applied->graph.GetEdgeWeight("B", "C") == 4, "Applying the project builds a weighted network");
+
+        auto existing = BuildDocument(vertices, ArraySequence<ChannelKey>(longEdge, 1), true, placements);
+        Check(existing->graph.GetEdgeWeight("A", "C") == 5, "Bulk input uses final positions");
+        existing->AddChannel("A", "B");
+        Check(existing->graph.GetEdgeWeight("A", "B") == 3, "Manual channel uses the same distance");
+        auto replaced = ApplyNetworkDesign(*existing, *DesignNetwork(existing->graph, positions));
+        Check(replaced->graph.GetEdgeCount() == 2 && !replaced->graph.ContainsEdge("A", "C") &&
+              existing->graph.ContainsEdge("A", "C"), "Applying a new project replaces existing channels on a copy");
+        auto edited = *applied;
+        edited.Relocate("A", {{3, 0}, earth});
+        Check(edited.graph.GetEdgeWeight("A", "B") == 0 && edited.graph.GetEdgeWeight("B", "C") == 4 &&
+              applied->graph.GetEdgeWeight("A", "B") == 3 && edited.revision == applied->revision + 1,
+              "Relocation updates incident channels without changing the source or other weights");
+        auto placement = PlaceOnPlanet(6, true, 0);
+        edited.Relocate("A", placement);
+        Check(edited.graph.GetEdgeWeight("A", "B") ==
+              ChannelDistance(edited.StationPosition("A"), edited.StationPosition("B")),
+              "Planet and orbit changes update weights");
+
+        Check(!DesignNetwork(source->graph, positions, [] { return true; }), "Cancelled design yields no project");
+        positions.Get(0).x = std::numeric_limits<float>::infinity();
+        CheckThrows<std::invalid_argument>([&] { DesignNetwork(source->graph, positions); });
     }
 
     void TestGeneration()
@@ -502,7 +669,7 @@ namespace
     {
         InterplanetaryNetwork network(std::make_unique<TreeDictionary<StationId, std::size_t>>(),
                                       CreateArraySequence, CreateArraySequence);
-        Check(AnalyzeNetwork(network, BFS).status == NetworkStatus::Empty, "Empty network");
+        Check(AnalyzeNetwork(network, CreateBFSEnumerator<StationId>).status == NetworkStatus::Empty, "Empty network");
         const StationId earth = "Земля-орбита";
         const StationId mars = "Марс";
         const StationId start = "R,\"one\"";
@@ -513,15 +680,15 @@ namespace
         network.AddEdge(earth, mars);
 
         Check(GetGeneratedStationId(15) == "S15", "Generated station identifier");
-        Check(AnalyzeNetwork(network, DFS).status == NetworkStatus::Connected, "Connected network");
-        auto tree = FindSpanningTree(network, network.FindVertexIndex(start), DFS);
+        Check(AnalyzeNetwork(network, CreateDFSEnumerator<StationId>).status == NetworkStatus::Connected, "Connected network");
+        auto tree = FindSpanningTree(network, network.FindVertexIndex(start), CreateDFSEnumerator<StationId>);
         Check(tree.status == SpanningTreeStatus::Found && tree.edges.GetLength() == 2 &&
               *tree.order.Get(0) == start, "Network spanning tree uses station IDs");
 
         auto report = CompareAlgorithms(network, BenchmarkTask::SpanningTree, 0, 2);
-        Check(report.records.GetLength() == 4 && report.records.Get(0).method == BFS &&
-              report.records.Get(1).method == DFS && report.records.Get(2).method == DFS &&
-              report.records.Get(3).method == BFS, "Paired repetitions use alternate algorithm order");
+        Check(report.records.GetLength() == 4 && report.records.Get(0).algorithm == "BFS" &&
+              report.records.Get(1).algorithm == "DFS" && report.records.Get(2).algorithm == "DFS" &&
+              report.records.Get(3).algorithm == "BFS", "Paired repetitions use alternate algorithm order");
         Check(report.bfsMedian >= 0 && report.dfsMedian >= 0 && report.records.Get(0).startKey == start,
               "Medians and start key");
         std::ostringstream csv;
@@ -536,7 +703,7 @@ namespace
               "Odd and even medians");
 
         network.RemoveEdge(earth, mars);
-        auto analysis = AnalyzeNetwork(network, BFS);
+        auto analysis = AnalyzeNetwork(network, CreateBFSEnumerator<StationId>);
         Check(analysis.status == NetworkStatus::Disconnected && analysis.components.componentEnds.GetLength() == 2,
               "Removed channel splits the network");
         CompareAlgorithms(network, BenchmarkTask::SpanningTree, 0, 1);
@@ -557,6 +724,9 @@ namespace
         auto original = BuildDemoNetwork();
         Check(original->graph.GetVertexCount() == 10 && original->graph.GetEdgeCount() == 12 &&
               original->Status() == NetworkStatus::Connected, "Demo network is connected");
+        Check(original->graph.GetEdgeWeight("Фобос", "Юпитер") ==
+              ChannelDistance(original->StationPosition("Фобос"), original->StationPosition("Юпитер")),
+              "The demo uses final station locations for its weights");
         auto trial = *original;
         trial.graph.RemoveEdge("Фобос", "Юпитер");
         trial.OnTopologyChange();
@@ -647,12 +817,17 @@ int main()
         TestConstructionAndTraversals<ArrayStorage<std::size_t>>();
         TestKeyTypes();
         TestExceptionSafety();
+        TestWeightedGraph<TreeDictionary<std::size_t, std::size_t>>();
+        TestWeightedGraph<ArrayStorage<std::size_t>>();
+        TestCustomWeightAndMinimumSpanningTree();
+        TestTraversalEnumerators();
+        TestNetworkDesign();
         TestGeneration();
         TestLargeTraversals();
         TestNetworkAndBenchmarks();
         TestPresentationData();
         TestBenchmarkCancellation();
-        std::cout << "All tests passed (dictionary substitution, rollback, traversals, topologies, network, view data, cancellation and CSV)\n";
+        std::cout << "All tests passed (weighted graph, rollback, enumerators, spanning trees, network design, generation and benchmarks)\n";
         return 0;
     }
     catch (const std::exception& error)

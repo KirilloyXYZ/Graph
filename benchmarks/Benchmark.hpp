@@ -15,6 +15,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <system_error>
 
 #include "../generator/GraphGenerator.hpp"
@@ -34,7 +35,7 @@ struct BenchmarkInput
 struct BenchmarkRecord
 {
     BenchmarkTask task;
-    TraversalMethod method;
+    std::string_view algorithm;
     BenchmarkInput input;
     std::size_t vertices;
     std::size_t edges;
@@ -108,8 +109,9 @@ namespace benchmark_detail
         return std::chrono::duration<double, std::milli>(end - start).count();
     }
 
-    template<typename Edge>
-    ArraySequence<Edge> ArrangeEdges(const ArraySequence<Edge>& source, EdgeOrder order, unsigned int seed)
+    template<typename Edge, typename Compare = std::less<Edge>>
+    ArraySequence<Edge> ArrangeEdges(const ArraySequence<Edge>& source, EdgeOrder order, unsigned int seed,
+                                     Compare compare = {})
     {
         GetEdgeOrderName(order);
         ArraySequence<Edge> edges(source);
@@ -117,7 +119,7 @@ namespace benchmark_detail
 
         auto* first = &edges.Get(0);
         auto* end = first + edges.GetLength();
-        std::sort(first, end);
+        std::sort(first, end, compare);
         if (order == EdgeOrder::Descending) { std::reverse(first, end); }
         if (order == EdgeOrder::Shuffled)
         {
@@ -127,8 +129,8 @@ namespace benchmark_detail
         return edges;
     }
 
-    template<typename Key>
-    ArraySequence<std::size_t> LabelComponents(const Graph<Key>& graph, const ConnectedComponentsResult<Key>& result)
+    template<typename Key, typename Weight>
+    ArraySequence<std::size_t> LabelComponents(const Graph<Key, Weight>& graph, const ConnectedComponentsResult<Key>& result)
     {
         std::size_t count = graph.GetVertexCount();
         if (result.order.GetLength() != count) { throw std::logic_error("Benchmark: incomplete partition"); }
@@ -159,8 +161,8 @@ namespace benchmark_detail
         return labels;
     }
 
-    template<typename Key>
-    void CheckSpanningTree(const Graph<Key>& graph, const SpanningTreeResult<Key>& result,
+    template<typename Key, typename Weight>
+    void CheckSpanningTree(const Graph<Key, Weight>& graph, const SpanningTreeResult<Key>& result,
                            std::optional<std::size_t> start, const ArraySequence<std::size_t>& labels,
                            std::size_t reached)
     {
@@ -217,8 +219,8 @@ namespace benchmark_detail
     }
 }
 
-template<typename Key>
-BenchmarkReport CompareAlgorithms(const Graph<Key>& graph, BenchmarkTask task, std::optional<std::size_t> start,
+template<typename Key, typename Weight>
+BenchmarkReport CompareAlgorithms(const Graph<Key, Weight>& graph, BenchmarkTask task, std::optional<std::size_t> start,
                                   std::size_t repeats, const BenchmarkInput& input = {},
                                   const BenchmarkControl& control = {})
 {
@@ -240,7 +242,7 @@ BenchmarkReport CompareAlgorithms(const Graph<Key>& graph, BenchmarkTask task, s
 
     if (control.ShouldStop()) { return {ArraySequence<BenchmarkRecord>(), 0, 0, true}; }
 
-    auto reference = FindConnectedComponents(graph, TraversalMethod::BreadthFirst);
+    auto reference = FindConnectedComponents(graph, CreateBFSEnumerator<Key, Weight>);
     auto labels = benchmark_detail::LabelComponents(graph, reference);
     std::size_t reached = 0;
     if (task == BenchmarkTask::SpanningTree && count != 0)
@@ -256,19 +258,23 @@ BenchmarkReport CompareAlgorithms(const Graph<Key>& graph, BenchmarkTask task, s
     ArraySequence<double> bfs(repeats);
     ArraySequence<double> dfs(repeats);
 
-    auto run = [&](TraversalMethod method, std::size_t repeat)
+    const std::pair<std::string_view, TraversalFactory<Key, Weight>> algorithms[]{
+        {"BFS", CreateBFSEnumerator<Key, Weight>}, {"DFS", CreateDFSEnumerator<Key, Weight>}
+    };
+    auto run = [&](std::size_t algorithmIndex, std::size_t repeat)
     {
+        const auto& algorithm = algorithms[algorithmIndex];
         double milliseconds = 0;
         if (task == BenchmarkTask::SpanningTree)
         {
             SpanningTreeResult<Key> result;
-            milliseconds = benchmark_detail::Measure([&]() { result = FindSpanningTree(graph, start, method); });
+            milliseconds = benchmark_detail::Measure([&]() { result = FindSpanningTree(graph, start, algorithm.second); });
             benchmark_detail::CheckSpanningTree(graph, result, start, labels, reached);
         }
         else
         {
             ConnectedComponentsResult<Key> result;
-            milliseconds = benchmark_detail::Measure([&]() { result = FindConnectedComponents(graph, method); });
+            milliseconds = benchmark_detail::Measure([&]() { result = FindConnectedComponents(graph, algorithm.second); });
             auto actual = benchmark_detail::LabelComponents(graph, result);
             for (std::size_t i = 0; i < count; ++i)
             {
@@ -277,7 +283,7 @@ BenchmarkReport CompareAlgorithms(const Graph<Key>& graph, BenchmarkTask task, s
         }
 
         control.Measured();
-        return BenchmarkRecord{task, method, input, count, graph.GetEdgeCount(), startKey, repeat, milliseconds,
+        return BenchmarkRecord{task, algorithm.first, input, count, graph.GetEdgeCount(), startKey, repeat, milliseconds,
                                reference.componentEnds.GetLength(),
                                task == BenchmarkTask::SpanningTree ? reached : count};
     };
@@ -285,7 +291,7 @@ BenchmarkReport CompareAlgorithms(const Graph<Key>& graph, BenchmarkTask task, s
     auto keep = [&](const BenchmarkRecord& record)
     {
         report.records.Append(record);
-        if (record.method == TraversalMethod::BreadthFirst) { bfs.Append(record.milliseconds); }
+        if (record.algorithm == "BFS") { bfs.Append(record.milliseconds); }
         else { dfs.Append(record.milliseconds); }
     };
     for (std::size_t trial = 0; trial < repeats; ++trial)
@@ -295,8 +301,8 @@ BenchmarkReport CompareAlgorithms(const Graph<Key>& graph, BenchmarkTask task, s
             report.stopped = true;
             break;
         }
-        auto firstMethod = trial % 2 == 0 ? TraversalMethod::BreadthFirst : TraversalMethod::DepthFirst;
-        auto secondMethod = trial % 2 == 0 ? TraversalMethod::DepthFirst : TraversalMethod::BreadthFirst;
+        auto firstMethod = trial % 2;
+        auto secondMethod = 1 - firstMethod;
         auto first = run(firstMethod, trial + 1);
         if (control.ShouldStop())
         {
@@ -340,7 +346,7 @@ inline void WriteBenchmarkCsv(std::ostream& output, const Sequence<BenchmarkReco
         const auto& record = records.Get(i);
         const auto& generation = record.input.generation;
         output << GetTaskName(record.task) << ','
-               << (record.method == TraversalMethod::BreadthFirst ? "BFS" : "DFS") << ','
+               << record.algorithm << ','
                << (generation ? GetTopologyName(generation->topology) : "manual") << ','
                << record.vertices << ',' << record.edges << ',';
         if (generation) { output << generation->vertexCount; }

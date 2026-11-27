@@ -20,7 +20,10 @@ namespace
         "Цепочка", "Цикл", "Полный граф", "Звезда", "Двоичное дерево", "Случайный граф"
     };
 
-    constexpr const char* ActionNames[]{"Обход", "Компоненты", "Остов"};
+    constexpr const char* ActionNames[]{"Обход", "Компоненты", "Остов", "Минимальный остов"};
+    constexpr std::pair<const char*, TraversalFactory<StationId>> Traversals[]{
+        {"BFS", CreateBFSEnumerator<StationId>}, {"DFS", CreateDFSEnumerator<StationId>}
+    };
 
     bool IsLarge(const GraphDocument& source)
     {
@@ -48,11 +51,6 @@ namespace
         if (detail.find("too many possible edges") != std::string::npos) { return "Размер графа слишком велик для расчёта числа рёбер."; }
         if (dynamic_cast<const std::bad_alloc*>(&error)) { return "Для этой операции не хватило памяти."; }
         return detail;
-    }
-
-    const char* MethodLabel(TraversalMethod method)
-    {
-        return method == TraversalMethod::BreadthFirst ? "BFS" : "DFS";
     }
 
     bool DrawPlanetPicker(const char* label, int& planet)
@@ -283,6 +281,7 @@ void GraphView::ResetSelection(bool keep)
     analysis.reset();
     canvas.document = nullptr;
     canvas.dragVertex.reset();
+    canvas.dragPlacement.reset();
     edgePageSource = nullptr;
     edgePageNumber = 0;
 }
@@ -295,19 +294,29 @@ void GraphView::SetDocument(std::shared_ptr<GraphDocument> next, bool replaceVie
 }
 
 void GraphView::Change(GuiTask& job, const char* name, std::function<void(GraphDocument&)> operation,
-                       std::optional<StationId> select)
+                       std::optional<StationId> select, bool topologyChanged)
 {
-    auto source = document;
-    auto change = [source, operation = std::move(operation)]()
+    auto source = topologyChanged ? document : Current();
+    auto change = [source, operation = std::move(operation), topologyChanged]()
     {
         auto updated = std::make_shared<GraphDocument>(*source);
         operation(*updated);
-        updated->OnTopologyChange();
+        if (topologyChanged) { updated->OnTopologyChange(); }
         return updated;
     };
-    auto publish = [this, select = std::move(select), name = std::string(name)](std::shared_ptr<GraphDocument> updated)
+    auto publish = [this, source, topologyChanged, select = std::move(select), name = std::string(name)](
+                       std::shared_ptr<GraphDocument> updated)
     {
-        SetDocument(std::move(updated), false);
+        if (topologyChanged) { SetDocument(std::move(updated), false); }
+        else
+        {
+            if (Current() != source) { return; }
+            if (trial) { trial = std::move(updated); }
+            else { document = std::move(updated); }
+            if (analysis && analysis->design) { analysis.reset(); }
+            canvas.document = nullptr;
+            edgePageSource = nullptr;
+        }
         if (select) { station = select; channel.reset(); }
         Say(name);
     };
@@ -316,9 +325,9 @@ void GraphView::Change(GuiTask& job, const char* name, std::function<void(GraphD
         job.Start(this, name, 0, 0, [change = std::move(change), publish = std::move(publish)](GuiTask& task)
         {
             auto updated = change();
-            return [updated = std::move(updated), publish = std::move(publish), stopped = task.Stopping()]() mutable
+            return [updated = std::move(updated), publish = std::move(publish), &task]() mutable
             {
-                if (!stopped) { publish(std::move(updated)); }
+                if (!task.Stopping()) { publish(std::move(updated)); }
             };
         });
     }
@@ -327,10 +336,17 @@ void GraphView::Change(GuiTask& job, const char* name, std::function<void(GraphD
 
 void GraphView::AddConnection(GuiTask& job, const StationId& u, const StationId& v)
 {
-    Change(job, solar ? "Канал добавлен" : "Ребро добавлено", [u, v](GraphDocument& next) { next.graph.AddEdge(u, v); });
+    Change(job, solar ? "Канал добавлен" : "Ребро добавлено", [u, v](GraphDocument& next) { next.AddChannel(u, v); });
     first.reset();
     second.reset();
     linkMode = false;
+}
+
+void GraphView::MoveStation(GuiTask& job, const StationId& key, Placement placement)
+{
+    if (trial && !showTrial) { return; }
+    Change(job, solar ? "Станция перемещена" : "Вершина перемещена",
+           [key, placement](GraphDocument& next) { next.Relocate(key, placement); }, std::nullopt, false);
 }
 
 void GraphView::Generate(GuiTask& job, GenerationOptions options)
@@ -374,26 +390,29 @@ void GraphView::StartAnalysis(GuiTask& job)
 {
     auto source = Current();
     auto seed = start ? source->graph.FindVertexIndex(*start) : std::nullopt;
+    const bool design = action == AnalysisAction::MinimumSpanningTree;
     if (action == AnalysisAction::Traversal && !seed)
     {
         throw std::invalid_argument("Выберите начальную вершину.");
     }
-    auto compute = [source, chosen = action, method = method, seed]()
+    auto compute = [source, chosen = action, traversal = Traversals[traversalChoice], seed](
+                       const std::function<bool()>& shouldStop) -> std::shared_ptr<Analysis>
     {
         auto result = std::make_shared<Analysis>();
         result->action = chosen;
-        result->method = method;
+        result->algorithm = traversal.first;
+        result->revision = source->revision;
         switch (chosen)
         {
             case AnalysisAction::Traversal:
-                result->keys = Traverse(source->graph, *seed, method);
+                result->keys = Traverse(source->graph, *seed, traversal.second);
                 break;
             case AnalysisAction::Components:
-                result->keys = FindConnectedComponents(source->graph, method).order;
+                result->keys = FindConnectedComponents(source->graph, traversal.second).order;
                 break;
             case AnalysisAction::SpanningTree:
             {
-                auto tree = FindSpanningTree(source->graph, seed, method);
+                auto tree = FindSpanningTree(source->graph, seed, traversal.second);
                 result->status = tree.status;
                 result->keys = std::move(tree.order);
                 for (std::size_t i = 0; i < tree.edges.GetLength(); ++i)
@@ -402,6 +421,16 @@ void GraphView::StartAnalysis(GuiTask& job)
                     result->tree.emplace(MakeChannelKey(*result->keys.Get(parent), *result->keys.Get(child)), child);
                 }
                 break;
+            }
+            case AnalysisAction::MinimumSpanningTree:
+            {
+                ArraySequence<WorldPoint> positions(source->graph.GetVertexCount());
+                for (std::size_t i = 0; i < source->graph.GetVertexCount(); ++i)
+                {
+                    positions.Append(source->StationPosition(source->graph.GetVertexKey(i)));
+                }
+                result->design = DesignNetwork(source->graph, positions, shouldStop);
+                return result->design ? result : nullptr;
             }
         }
         result->steps.reserve(result->keys.GetLength());
@@ -413,23 +442,29 @@ void GraphView::StartAnalysis(GuiTask& job)
     auto publish = [this, source](std::shared_ptr<Analysis> result)
     {
         if (Current() != source) { return; }
+        if (!result) { Say("Расчёт остановлен"); return; }
+        if (source->revision != result->revision) { return; }
         analysis = std::move(result);
         showInspector = true;
         group.reset();
         Say("Результат анализа готов");
     };
-    if (IsLarge(*source))
+    const bool large = design
+        ? GetGeneratedEdgeCount({Topology::Complete, source->graph.GetVertexCount()}) > 16000
+        : IsLarge(*source);
+    if (large)
     {
-        job.Start(this, "Анализ графа", 0, 0, [compute = std::move(compute), publish = std::move(publish)](GuiTask& task)
+        job.Start(this, design ? "Проектирование сети" : "Анализ графа", 0, 0,
+                  [compute = std::move(compute), publish = std::move(publish)](GuiTask& task)
         {
-            auto result = compute();
-            return [result = std::move(result), publish = std::move(publish), stopped = task.Stopping()]() mutable
+            auto result = compute([&task] { return task.Stopping(); });
+            return [result = std::move(result), publish = std::move(publish), &task]() mutable
             {
-                if (!stopped) { publish(std::move(result)); }
+                publish(task.Stopping() ? nullptr : std::move(result));
             };
         });
     }
-    else { publish(compute()); }
+    else { publish(compute({})); }
 }
 
 void GraphView::BeginTrial(GuiTask& job)
@@ -613,7 +648,7 @@ void GraphView::DrawEditor(GuiTask& job, GraphView* network)
     {
         if (ImGui::Button(solar ? "Новая пустая сеть" : "Новый пустой граф", {-1.0f, 0.0f}))
         {
-            auto create = [this] { SetDocument(std::make_shared<GraphDocument>(), true); Say("Создан пустой граф"); };
+            auto create = [this] { SetDocument(std::make_shared<GraphDocument>(solar), true); Say("Создан пустой граф"); };
             if (document->graph.GetVertexCount() == 0) { Try(create); }
             else { ConfirmReplacement("Заменить текущие данные пустым графом?", create); }
         }
@@ -708,24 +743,25 @@ void GraphView::DrawEditor(GuiTask& job, GraphView* network)
         ImGui::BeginDisabled(job.Busy());
         int selected = static_cast<int>(action);
         ImGui::SetNextItemWidth(-1);
-        if (ImGui::Combo("##Operation", &selected, ActionNames, static_cast<int>(std::size(ActionNames))))
+        if (ImGui::Combo("##Operation", &selected, ActionNames, static_cast<int>(std::size(ActionNames)) - (solar ? 0 : 1)))
         {
             action = static_cast<AnalysisAction>(selected);
             analysis.reset();
             group.reset();
             pickStart = false;
         }
-        int algorithm = method == TraversalMethod::BreadthFirst ? 0 : 1;
-        bool changed = ImGui::RadioButton("BFS", &algorithm, 0);
-        ImGui::SameLine();
-        changed = ImGui::RadioButton("DFS", &algorithm, 1) || changed;
-        if (changed)
+        if (action != AnalysisAction::MinimumSpanningTree)
         {
-            method = algorithm == 0 ? TraversalMethod::BreadthFirst : TraversalMethod::DepthFirst;
-            analysis.reset();
-            group.reset();
+            bool changed = ImGui::RadioButton(Traversals[0].first, &traversalChoice, 0);
+            ImGui::SameLine();
+            changed = ImGui::RadioButton(Traversals[1].first, &traversalChoice, 1) || changed;
+            if (changed)
+            {
+                analysis.reset();
+                group.reset();
+            }
         }
-        if (action != AnalysisAction::Components)
+        if (action == AnalysisAction::Traversal || action == AnalysisAction::SpanningTree)
         {
             if (DrawStationPicker("Начальная вершина", *current, start)) { analysis.reset(); }
             ImGui::BeginDisabled(current->graph.GetVertexCount() == 0);
@@ -891,15 +927,63 @@ void GraphView::DrawLists(const GraphDocument& current)
     }
 }
 
-void GraphView::DrawAnalysis()
+void GraphView::DrawNetworkDesign(GuiTask& job, const NetworkDesign& design)
+{
+    if (design.status == SpanningTreeStatus::Empty) { Theme::Note("Добавьте станции на карту."); return; }
+    if (design.status == SpanningTreeStatus::Disconnected) { Theme::Note("Общего остова нет."); return; }
+
+    Theme::Note("Проект связный. Пунктир на карте показывает предложенные каналы.");
+    ImGui::Text("Каналов  %zu", design.channels.GetLength());
+    ImGui::Text("Суммарная длина  %.2f ед. карты", design.totalLength);
+    if (design.channels.GetLength() &&
+        ImGui::BeginChild("ProposedChannels", {0, 150}, ImGuiChildFlags_Borders))
+    {
+        ImGuiListClipper clipper;
+        clipper.Begin(static_cast<int>(std::min<std::size_t>(design.channels.GetLength(), INT_MAX)));
+        while (clipper.Step())
+        {
+            for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i)
+            {
+                const auto& edge = design.channels.Get(static_cast<std::size_t>(i));
+                ImGui::Text("%s — %s  ·  %.2f", edge.first.c_str(), edge.second.c_str(), edge.weight);
+            }
+        }
+    }
+    if (design.channels.GetLength()) { ImGui::EndChild(); }
+
+    ImGui::BeginDisabled(job.Busy() || trial || canvas.dragPlacement.has_value() || design.channels.GetLength() == 0);
+    if (Theme::Primary("Применить каналы…", {-1.0f, 0.0f}))
+    {
+        auto source = Current();
+        auto result = analysis;
+        ConfirmReplacement(source->graph.GetEdgeCount() == 0
+                               ? "Добавить предложенные каналы в текущую сеть?"
+                               : "Заменить все текущие каналы каналами проекта?",
+            [this, source, result]
+            {
+                if (trial || Current() != source || source->revision != result->revision || analysis != result)
+                {
+                    throw std::invalid_argument("Сеть изменилась. Постройте проект заново.");
+                }
+                SetDocument(ApplyNetworkDesign(*source, *result->design), false);
+                Say("Каналы минимального остова применены");
+            });
+    }
+    if (trial) { Theme::Note("Применение доступно после завершения эксперимента."); }
+    ImGui::EndDisabled();
+}
+
+void GraphView::DrawAnalysis(GuiTask& job)
 {
     if (!analysis) { return; }
     ImGui::Separator();
     Theme::Heading("Результат", 18.0f);
     auto current = Current();
     auto& result = *analysis;
+    if (result.design) { DrawNetworkDesign(job, *result.design); return; }
+
     std::size_t count = result.keys.GetLength();
-    ImGui::TextColored(Theme::Tint(Theme::Blue), "%s · %s", MethodLabel(result.method),
+    ImGui::TextColored(Theme::Tint(Theme::Blue), "%s · %s", result.algorithm,
                        ActionNames[static_cast<int>(result.action)]);
 
     if (result.action == AnalysisAction::SpanningTree)
@@ -1065,14 +1149,22 @@ void GraphView::DrawInspector(GuiTask& job)
 
         if (solar)
         {
-            auto& place = current->locations.at(key);
+            const auto& place = current->locations.at(key);
             int planet = static_cast<int>(place.planet);
             bool onOrbit = place.orbit;
-            ImGui::BeginDisabled(job.Locks(this) || (trial && !showTrial));
+            ImGui::BeginDisabled(job.Busy() || (trial && !showTrial));
             ImGui::SetNextItemWidth(-74);
             bool moved = DrawPlanetPicker("Планета##Location", planet);
             moved = ImGui::Checkbox("На орбите##Location", &onOrbit) || moved;
-            if (moved) { place = PlaceOnPlanet(static_cast<std::size_t>(planet), onOrbit, *current->graph.FindVertexIndex(key)); }
+            if (moved)
+            {
+                Try([&]
+                {
+                    auto placement = PlaceOnPlanet(static_cast<std::size_t>(planet), onOrbit,
+                                                   *current->graph.FindVertexIndex(key));
+                    MoveStation(job, key, placement);
+                });
+            }
             ImGui::EndDisabled();
         }
 
@@ -1107,7 +1199,7 @@ void GraphView::DrawInspector(GuiTask& job)
             ImGui::TreePop();
         }
         ImGui::BeginDisabled(job.Busy());
-        if (ImGui::Button("Сделать начальной", {-1.0f, 0.0f}))
+        if (action != AnalysisAction::MinimumSpanningTree && ImGui::Button("Сделать начальной", {-1.0f, 0.0f}))
         {
             start = key;
             if (analysis && analysis->action != AnalysisAction::Components) { analysis.reset(); }
@@ -1127,6 +1219,7 @@ void GraphView::DrawInspector(GuiTask& job)
         auto key = *channel;
         Theme::Overline(solar ? "ВЫБРАННЫЙ КАНАЛ" : "ВЫБРАННОЕ РЕБРО");
         ImGui::TextWrapped("%s — %s", key.first.c_str(), key.second.c_str());
+        if (solar) { ImGui::Text("Длина  %.2f ед. карты", current->graph.GetEdgeWeight(key.first, key.second)); }
         if (analysis && analysis->status == SpanningTreeStatus::Found)
         {
             if (analysis->tree.count(key)) { ImGui::TextColored(Theme::Tint(Theme::Green), "Входит в остов"); }
@@ -1204,7 +1297,7 @@ void GraphView::DrawInspector(GuiTask& job)
             ImGui::TreePop();
         }
     }
-    DrawAnalysis();
+    DrawAnalysis(job);
 }
 
 void GraphView::DrawDialogs(GuiTask& job)
@@ -1274,6 +1367,10 @@ void GraphView::DrawDialogs(GuiTask& job)
 
 void GraphView::HandleCanvas(GuiTask& job, CanvasEvent event)
 {
+    if (event.move)
+    {
+        Try([&] { MoveStation(job, event.move->first, event.move->second); });
+    }
     if (event.station)
     {
         station = event.station;
@@ -1365,7 +1462,7 @@ void GraphView::Draw(GuiTask& job, GraphView* network)
         CanvasHighlights highlight;
         highlight.station = station;
         highlight.channel = channel;
-        highlight.start = start;
+        if (action != AnalysisAction::MinimumSpanningTree) { highlight.start = start; }
         highlight.linkStart = linkMode ? first : std::nullopt;
         highlight.group = group;
         highlight.linkMode = linkMode;
@@ -1377,6 +1474,7 @@ void GraphView::Draw(GuiTask& job, GraphView* network)
             highlight.components = analysis->action == AnalysisAction::Components;
             highlight.treeOnly = analysis->treeOnly;
             if (analysis->status == SpanningTreeStatus::Found) { highlight.treeEdges = &analysis->tree; }
+            if (analysis->design) { highlight.design = &*analysis->design; }
         }
         if (trial && showTrial)
         {
@@ -1387,7 +1485,7 @@ void GraphView::Draw(GuiTask& job, GraphView* network)
 
         auto active = Current();
         auto event = DrawGraphCanvas(*active, canvas, solar, highlight,
-                                     !job.Locks(this) && (!trial || showTrial));
+                                     !job.Busy() && (!trial || showTrial));
         HandleCanvas(job, std::move(event));
     }
     ImGui::EndChild();

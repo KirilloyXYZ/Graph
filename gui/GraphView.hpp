@@ -9,7 +9,7 @@
 #include "GraphCanvas.hpp"
 #include "GuiTask.hpp"
 
-enum class AnalysisAction { Traversal, Components, SpanningTree };
+enum class AnalysisAction { Traversal, Components, SpanningTree, MinimumSpanningTree };
 
 bool DrawStationPicker(const char* label, const GraphDocument& document, std::optional<StationId>& selection);
 void DrawTopologyPicker(Topology& selected);
@@ -23,7 +23,9 @@ private:
         std::unordered_map<StationId, std::size_t> steps;
         std::map<ChannelKey, std::size_t> tree;
         AnalysisAction action = AnalysisAction::Traversal;
-        TraversalMethod method = TraversalMethod::BreadthFirst;
+        const char* algorithm = nullptr;
+        std::optional<NetworkDesign> design;
+        std::size_t revision = 0;
         SpanningTreeStatus status = SpanningTreeStatus::Empty;
         std::size_t shown = 0;
         float elapsed = 0;
@@ -47,7 +49,7 @@ private:
     std::optional<StationId> second;
     std::optional<std::size_t> group;
     AnalysisAction action = AnalysisAction::Traversal;
-    TraversalMethod method = TraversalMethod::BreadthFirst;
+    int traversalChoice = 0;
     std::shared_ptr<Analysis> analysis;
     float speed = 4.0f;
     bool linkMode = false;
@@ -84,8 +86,9 @@ private:
     void ResetSelection(bool keep);
     void SetDocument(std::shared_ptr<GraphDocument> next, bool replaceView);
     void Change(GuiTask& job, const char* name, std::function<void(GraphDocument&)> operation,
-                std::optional<StationId> select = std::nullopt);
+                std::optional<StationId> select = std::nullopt, bool topologyChanged = true);
     void AddConnection(GuiTask& job, const StationId& u, const StationId& v);
+    void MoveStation(GuiTask& job, const StationId& key, Placement placement);
     void Generate(GuiTask& job, GenerationOptions options);
     void Transfer(GuiTask& job, GraphView& target);
     void StartAnalysis(GuiTask& job);
@@ -97,7 +100,8 @@ private:
     void DrawEditor(GuiTask& job, GraphView* network);
     void DrawInspector(GuiTask& job);
     void DrawLists(const GraphDocument& current);
-    void DrawAnalysis();
+    void DrawAnalysis(GuiTask& job);
+    void DrawNetworkDesign(GuiTask& job, const NetworkDesign& design);
     void DrawTrial(GuiTask& job);
     void DrawDialogs(GuiTask& job);
     void HandleCanvas(GuiTask& job, CanvasEvent event);

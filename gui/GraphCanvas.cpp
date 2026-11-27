@@ -124,13 +124,14 @@ namespace
     {
         camera.fit = false;
         camera.dragVertex.reset();
+        camera.dragPlacement.reset();
         WorldPoint low{-470, -316}, high{470, 316};
         if ((!system || !solar) && !camera.vertices.empty())
         {
-            low = high = PositionOf(document.locations.at(camera.vertices.front()), solar);
+            low = high = document.StationPosition(camera.vertices.front());
             for (const auto& key : camera.vertices)
             {
-                auto point = PositionOf(document.locations.at(key), solar);
+                auto point = document.StationPosition(key);
                 low.x = std::min(low.x, point.x);
                 low.y = std::min(low.y, point.y);
                 high.x = std::max(high.x, point.x);
@@ -302,7 +303,7 @@ namespace
         const auto& original = *highlight.beforeFailure;
         auto screen = [&](const StationId& id)
         {
-            return projection.Screen(PositionOf(original.locations.at(id), true));
+            return projection.Screen(original.StationPosition(id));
         };
 
         if (highlight.offlineChannel)
@@ -357,7 +358,7 @@ ImU32 GetComponentColor(std::size_t group)
     return Theme::Color(colors[group % std::size(colors)]);
 }
 
-CanvasEvent DrawGraphCanvas(GraphDocument& document, CanvasState& camera, bool solar,
+CanvasEvent DrawGraphCanvas(const GraphDocument& document, CanvasState& camera, bool solar,
                             const CanvasHighlights& highlight, bool allowDrag)
 {
     UpdateVisibleGraph(document, camera, highlight);
@@ -429,7 +430,7 @@ CanvasEvent DrawGraphCanvas(GraphDocument& document, CanvasState& camera, bool s
     points.reserve(camera.vertices.size());
     for (const auto& key : camera.vertices)
     {
-        points.push_back(projection.Screen(PositionOf(document.locations.at(key), solar)));
+        points.push_back(projection.Screen(document.StationPosition(key)));
     }
     auto hit = hovered ? HitStation(mouse, points) : std::nullopt;
 
@@ -459,22 +460,29 @@ CanvasEvent DrawGraphCanvas(GraphDocument& document, CanvasState& camera, bool s
         }
     }
 
-    if (camera.dragVertex && allowDrag && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 3.0f))
+    if (camera.dragVertex && allowDrag)
     {
-        auto location = document.locations.find(*camera.dragVertex);
-        if (location != document.locations.end())
+        if (ImGui::IsMouseDragging(ImGuiMouseButton_Left, 3.0f))
         {
-            location->second.offset.x += io.MouseDelta.x / camera.zoom;
-            location->second.offset.y += io.MouseDelta.y / camera.zoom;
-            auto at = std::find(camera.vertices.begin(), camera.vertices.end(), location->first);
+            if (!camera.dragPlacement) { camera.dragPlacement = document.locations.at(*camera.dragVertex); }
+            camera.dragPlacement->offset.x += io.MouseDelta.x / camera.zoom;
+            camera.dragPlacement->offset.y += io.MouseDelta.y / camera.zoom;
+        }
+        if (camera.dragPlacement)
+        {
+            auto at = std::find(camera.vertices.begin(), camera.vertices.end(), *camera.dragVertex);
             if (at != camera.vertices.end())
             {
                 auto index = static_cast<std::size_t>(at - camera.vertices.begin());
-                points[index] = projection.Screen(PositionOf(location->second, solar));
+                points[index] = projection.Screen(PositionOf(*camera.dragPlacement, solar));
+            }
+            if (ImGui::IsMouseReleased(ImGuiMouseButton_Left))
+            {
+                event.move.emplace(*camera.dragVertex, *camera.dragPlacement);
             }
         }
     }
-    if (!allowDrag || !ImGui::IsMouseDown(ImGuiMouseButton_Left)) { camera.dragVertex.reset(); }
+    else { camera.dragPlacement.reset(); }
     if (hovered && (highlight.linkMode || highlight.chooseStart)) { ImGui::SetMouseCursor(ImGuiMouseCursor_Hand); }
 
     auto* draw = ImGui::GetWindowDrawList();
@@ -521,12 +529,31 @@ CanvasEvent DrawGraphCanvas(GraphDocument& document, CanvasState& camera, bool s
         draw->AddLine(points[first], points[second], color, thickness);
     }
 
+    if (highlight.design && !camera.dragPlacement)
+    {
+        std::unordered_map<StationId, std::size_t> visible;
+        visible.reserve(camera.vertices.size());
+        for (std::size_t i = 0; i < camera.vertices.size(); ++i) { visible.emplace(camera.vertices[i], i); }
+        const auto& proposed = highlight.design->channels;
+        for (std::size_t i = 0; i < proposed.GetLength(); ++i)
+        {
+            const auto& edge = proposed.Get(i);
+            auto first = visible.find(edge.first);
+            auto second = visible.find(edge.second);
+            if (first != visible.end() && second != visible.end())
+            {
+                Dash(draw, points[first->second], points[second->second], Theme::Color(Theme::Green));
+            }
+        }
+    }
+
     if (solar)
     {
         DrawGhost(draw, highlight, projection);
         if (highlight.station && document.locations.count(*highlight.station))
         {
-            const auto& placement = document.locations.at(*highlight.station);
+            const auto& placement = camera.dragVertex == highlight.station && camera.dragPlacement
+                ? *camera.dragPlacement : document.locations.at(*highlight.station);
             auto marker = projection.Screen(PositionOf(placement, true));
             auto body = projection.Screen(PlanetPosition(placement.planet));
             draw->AddLine(body, marker, Theme::Color(0xa9c5df, 82));
@@ -598,6 +625,11 @@ CanvasEvent DrawGraphCanvas(GraphDocument& document, CanvasState& camera, bool s
     draw->PopClipRect();
     draw->AddRect(root, bottom, Theme::Color(Theme::Border), 2.0f);
     ImGui::PopID();
+    if (!allowDrag || !ImGui::IsMouseDown(ImGuiMouseButton_Left))
+    {
+        camera.dragVertex.reset();
+        camera.dragPlacement.reset();
+    }
     return event;
 }
 

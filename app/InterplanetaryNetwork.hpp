@@ -7,7 +7,7 @@
 #include "../graph/GraphAlgorithms.hpp"
 
 using StationId = std::string;
-using InterplanetaryNetwork = Graph<StationId>;
+using InterplanetaryNetwork = Graph<StationId, double>;
 
 enum class NetworkStatus { Empty, Connected, Disconnected };
 
@@ -22,9 +22,10 @@ inline StationId GetGeneratedStationId(std::size_t number)
     return "S" + std::to_string(number);
 }
 
-inline NetworkAnalysis AnalyzeNetwork(const InterplanetaryNetwork& network, TraversalMethod method)
+inline NetworkAnalysis AnalyzeNetwork(const InterplanetaryNetwork& network,
+                                      TraversalFactory<StationId> create = CreateBFSEnumerator<StationId>)
 {
-    auto components = FindConnectedComponents(network, method);
+    auto components = FindConnectedComponents(network, create);
     std::size_t count = components.componentEnds.GetLength();
     NetworkStatus status = NetworkStatus::Disconnected;
     if (count == 0) { status = NetworkStatus::Empty; }

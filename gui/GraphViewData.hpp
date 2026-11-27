@@ -9,20 +9,15 @@
 #include <memory>
 #include <optional>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
-#include "../app/InterplanetaryNetwork.hpp"
+#include "../app/NetworkDesign.hpp"
 #include "../generator/GraphGenerator.hpp"
 #include "../lab2/TreeDictionary.hpp"
-
-struct WorldPoint
-{
-    float x = 0.0f;
-    float y = 0.0f;
-};
 
 inline WorldPoint operator+(WorldPoint left, WorldPoint right)
 {
@@ -155,6 +150,7 @@ inline std::vector<WorldPoint> MakeLayout(Topology topology, std::size_t count, 
 class GraphDocument
 {
 public:
+    const bool solar;
     InterplanetaryNetwork graph;
     std::map<StationId, Placement> locations;
     std::optional<GenerationOptions> origin;
@@ -162,12 +158,42 @@ public:
     std::unordered_map<StationId, std::size_t> groupOf;
     std::size_t revision = 0;
 
-    GraphDocument()
-        : graph(std::make_unique<TreeDictionary<StationId, std::size_t>>(), CreateArraySequence, CreateArraySequence) { }
+    explicit GraphDocument(bool solar)
+        : solar(solar), graph(std::make_unique<TreeDictionary<StationId, std::size_t>>(), CreateArraySequence, CreateArraySequence) { }
+
+    WorldPoint StationPosition(const StationId& key) const
+    {
+        auto location = locations.find(key);
+        if (location == locations.end()) { throw std::out_of_range("Graph: vertex not found"); }
+        return PositionOf(location->second, solar);
+    }
+
+    void AddChannel(const StationId& first, const StationId& second)
+    {
+        if (solar) { graph.AddEdge(first, second, ChannelDistance(StationPosition(first), StationPosition(second))); }
+        else { graph.AddEdge(first, second); }
+    }
+
+    // The editor calls this on the copy being prepared for publication.
+    void Relocate(const StationId& key, Placement placement)
+    {
+        auto& previous = locations.at(key);
+        auto position = PositionOf(placement, solar);
+        if (!IsFinite(position)) { throw std::invalid_argument("Station position must have finite coordinates"); }
+        if (solar)
+        {
+            graph.ForEachNeighbor(key, [&](const StationId& neighbor)
+            {
+                graph.SetEdgeWeight(key, neighbor, ChannelDistance(position, StationPosition(neighbor)));
+            });
+        }
+        previous = placement;
+        ++revision;
+    }
 
     void UpdateConnectivity()
     {
-        auto result = AnalyzeNetwork(graph, TraversalMethod::BreadthFirst);
+        auto result = AnalyzeNetwork(graph);
         groups.clear();
         groupOf.clear();
         std::size_t begin = 0;
@@ -216,24 +242,60 @@ inline const char* NetworkStatusLabel(NetworkStatus status)
     return "—";
 }
 
-inline auto BuildDocument(const Sequence<StationId>& vertices, const Sequence<ChannelKey>& edges, bool solar)
+inline auto BuildDocument(const Sequence<StationId>& vertices, const Sequence<ChannelKey>& edges, bool solar,
+                          const std::vector<Placement>& placements = {})
 {
-    auto document = std::make_shared<GraphDocument>();
-    document->graph = InterplanetaryNetwork(vertices, edges,
-        std::make_unique<TreeDictionary<StationId, std::size_t>>(), CreateArraySequence, CreateArraySequence);
-
+    auto document = std::make_shared<GraphDocument>(solar);
     for (std::size_t i = 0; i < vertices.GetLength(); ++i)
     {
         Placement placement;
-        if (solar) { placement = PlaceOnPlanet((i + 2) % Planets.size(), true, i / Planets.size()); }
+        if (!placements.empty()) { placement = placements.at(i); }
+        else if (solar) { placement = PlaceOnPlanet((i + 2) % Planets.size(), true, i / Planets.size()); }
         else
         {
             placement.offset = {static_cast<float>(i % 8) * 78.0f, static_cast<float>(i / 8) * 78.0f};
         }
         document->locations.emplace(vertices.Get(i), placement);
     }
+    auto dictionary = std::make_unique<TreeDictionary<StationId, std::size_t>>();
+    if (solar)
+    {
+        ArraySequence<InterplanetaryNetwork::WeightedEdge> weighted(edges.GetLength());
+        for (std::size_t i = 0; i < edges.GetLength(); ++i)
+        {
+            const auto& [first, second] = edges.Get(i);
+            weighted.Append({first, second, ChannelDistance(document->StationPosition(first),
+                                                            document->StationPosition(second))});
+        }
+        document->graph = InterplanetaryNetwork(vertices, weighted, std::move(dictionary),
+                                               CreateArraySequence, CreateArraySequence);
+    }
+    else
+    {
+        document->graph = InterplanetaryNetwork(vertices, edges, std::move(dictionary),
+                                               CreateArraySequence, CreateArraySequence);
+    }
     document->UpdateConnectivity();
     return document;
+}
+
+inline auto ApplyNetworkDesign(const GraphDocument& source, const NetworkDesign& design)
+{
+    const auto count = source.graph.GetVertexCount();
+    if (!source.solar || count == 0 || design.status != SpanningTreeStatus::Found ||
+        design.channels.GetLength() != count - 1)
+    {
+        throw std::invalid_argument("No complete network design to apply");
+    }
+    ArraySequence<StationId> keys(count);
+    for (std::size_t i = 0; i < count; ++i) { keys.Append(source.graph.GetVertexKey(i)); }
+    auto updated = std::make_shared<GraphDocument>(true);
+    updated->locations = source.locations;
+    updated->graph = InterplanetaryNetwork(keys, design.channels,
+        std::make_unique<TreeDictionary<StationId, std::size_t>>(), CreateArraySequence, CreateArraySequence);
+    updated->revision = source.revision;
+    updated->OnTopologyChange();
+    return updated;
 }
 
 inline auto BuildGeneratedDocument(const GenerationOptions& options)
@@ -251,12 +313,11 @@ inline auto BuildGeneratedDocument(const GenerationOptions& options)
         edges.Append({vertices.Get(first - 1), vertices.Get(second - 1)});
     }
 
-    auto document = BuildDocument(vertices, edges, false);
     auto positions = MakeLayout(options.topology, vertices.GetLength(), options.seed);
-    for (std::size_t i = 0; i < vertices.GetLength(); ++i)
-    {
-        document->locations.at(vertices.Get(i)).offset = positions[i];
-    }
+    std::vector<Placement> placements;
+    placements.reserve(positions.size());
+    for (auto position : positions) { placements.push_back({position}); }
+    auto document = BuildDocument(vertices, edges, false, placements);
     document->origin = options;
     return document;
 }
@@ -272,15 +333,16 @@ inline auto BuildDemoNetwork()
         {"Фобос", "Юпитер"}, {"Юпитер", "Европа"}, {"Европа", "Сатурн"},
         {"Сатурн", "Титан"}, {"Титан", "Нептун"}, {"Нептун", "Юпитер"}
     };
-    auto document = BuildDocument(ArraySequence<StationId>(keys, std::size(keys)),
-                                  ArraySequence<ChannelKey>(edges, std::size(edges)), true);
     const std::size_t planet[]{2, 2, 1, 3, 3, 4, 4, 5, 5, 7};
+    std::vector<Placement> placements;
+    placements.reserve(std::size(keys));
     for (std::size_t i = 0; i < std::size(keys); ++i)
     {
-        document->locations.at(keys[i]) = PlaceOnPlanet(planet[i], i == 1 || i == 4 || i == 6 || i == 8,
-                                                        i == 0 ? 1 : i + 2);
+        placements.push_back(PlaceOnPlanet(planet[i], i == 1 || i == 4 || i == 6 || i == 8,
+                                            i == 0 ? 1 : i + 2));
     }
-    return document;
+    return BuildDocument(ArraySequence<StationId>(keys, std::size(keys)),
+                         ArraySequence<ChannelKey>(edges, std::size(edges)), true, placements);
 }
 
 struct SplitGroup

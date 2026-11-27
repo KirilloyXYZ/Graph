@@ -17,6 +17,7 @@ struct CanvasState
     bool fit = true;
     bool fitSystem = true;
     std::optional<StationId> dragVertex;
+    std::optional<Placement> dragPlacement;
     bool panning = false;
 
     const GraphDocument* document = nullptr;
@@ -36,6 +37,7 @@ struct CanvasHighlights
     std::optional<std::size_t> group;
     const std::unordered_map<StationId, std::size_t>* steps = nullptr;
     const std::map<ChannelKey, std::size_t>* treeEdges = nullptr;
+    const NetworkDesign* design = nullptr;
     std::size_t shown = 0;
     bool components = false;
     bool treeOnly = false;
@@ -51,9 +53,10 @@ struct CanvasEvent
     std::optional<StationId> station;
     std::optional<ChannelKey> channel;
     bool background = false;
+    std::optional<std::pair<StationId, Placement>> move;
 };
 
-CanvasEvent DrawGraphCanvas(GraphDocument& document, CanvasState& camera, bool solar,
+CanvasEvent DrawGraphCanvas(const GraphDocument& document, CanvasState& camera, bool solar,
                             const CanvasHighlights& highlight, bool allowDrag);
 void DrawTopologyPreview(Topology topology, ImDrawList* draw, ImVec2 position, ImVec2 size, bool selected);
 ImU32 GetComponentColor(std::size_t group);
