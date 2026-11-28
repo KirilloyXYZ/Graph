@@ -327,7 +327,13 @@ inline BenchmarkReport BenchmarkGeneratedGraph(const GeneratedGraphData& data, c
 {
     if (control.ShouldStop()) { return {ArraySequence<BenchmarkRecord>(), 0, 0, true}; }
     auto edges = benchmark_detail::ArrangeEdges(data.edges, order, shuffleSeed);
-    Graph<std::size_t> graph(data.vertices, edges, std::make_unique<TreeDictionary<std::size_t, std::size_t>>(),
+    ArraySequence<Graph<std::size_t>::WeightedEdge> weighted(edges.GetLength());
+    for (std::size_t i = 0; i < edges.GetLength(); ++i)
+    {
+        const auto& [first, second] = edges.Get(i);
+        weighted.Append({first, second, 1.0});
+    }
+    Graph<std::size_t> graph(data.vertices, weighted, std::make_unique<TreeDictionary<std::size_t, std::size_t>>(),
                              CreateArraySequence, CreateArraySequence);
     auto start = task == BenchmarkTask::SpanningTree ? graph.FindVertexIndex(1) : std::nullopt;
     return CompareAlgorithms(graph, task, start, repeats, {options, order, shuffleSeed}, control);

@@ -25,7 +25,7 @@ using TraversalFactory = std::unique_ptr<IEnumerator<TraversalStep, Key>> (*)(
 
 namespace graph_detail
 {
-    // The graph and marks outlive the enumerator. The graph's topology stays fixed during traversal.
+    // The graph and marks outlive the enumerator.
     template<typename Key, typename Weight>
     class TraversalEnumerator : public IEnumerator<TraversalStep, Key>
     {
@@ -33,8 +33,17 @@ namespace graph_detail
         const Graph<Key, Weight>& graph;
         TraversalMarks& marks;
         std::size_t start;
+        const std::size_t expectedVersion;
         bool starting = true;
         std::optional<TraversalStep> current;
+
+        void CheckVersion() const
+        {
+            if (graph.GetTopologyVersion() != expectedVersion)
+            {
+                throw std::logic_error("Enumerator: graph topology changed");
+            }
+        }
 
         bool Discover(std::size_t vertex, std::optional<std::size_t> parent)
         {
@@ -45,7 +54,7 @@ namespace graph_detail
 
     public:
         TraversalEnumerator(const Graph<Key, Weight>& graph, std::size_t start, TraversalMarks& marks)
-            : graph(graph), marks(marks), start(start)
+            : graph(graph), marks(marks), start(start), expectedVersion(graph.GetTopologyVersion())
         {
             if (start >= graph.GetVertexCount()) { throw std::out_of_range("Enumerator: start vertex not found"); }
             if (marks.GetLength() != graph.GetVertexCount() || marks.Get(start))
@@ -56,6 +65,7 @@ namespace graph_detail
 
         const TraversalStep& GetCurrent() const override
         {
+            CheckVersion();
             if (!current) { throw std::out_of_range("Enumerator: no current element"); }
             return *current;
         }
@@ -77,6 +87,7 @@ public:
 
     bool MoveNext() override
     {
+        this->CheckVersion();
         this->current.reset();
         if (this->starting)
         {
@@ -123,6 +134,7 @@ public:
 
     bool MoveNext() override
     {
+        this->CheckVersion();
         this->current.reset();
         if (this->starting)
         {

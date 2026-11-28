@@ -60,7 +60,7 @@ inline WorldPoint PlanetPosition(std::size_t index)
             planet.orbitRadius * OrbitAspect * std::sin(planet.angle)};
 }
 
-using ChannelKey = InterplanetaryNetwork::Edge;
+using ChannelKey = std::pair<StationId, StationId>;
 
 inline ChannelKey MakeChannelKey(const StationId& first, const StationId& second)
 {
@@ -171,7 +171,7 @@ public:
     void AddChannel(const StationId& first, const StationId& second)
     {
         if (solar) { graph.AddEdge(first, second, ChannelDistance(StationPosition(first), StationPosition(second))); }
-        else { graph.AddEdge(first, second); }
+        else { graph.AddEdge(first, second, 1.0); }
     }
 
     // The editor calls this on the copy being prepared for publication.
@@ -257,24 +257,15 @@ inline auto BuildDocument(const Sequence<StationId>& vertices, const Sequence<Ch
         }
         document->locations.emplace(vertices.Get(i), placement);
     }
-    auto dictionary = std::make_unique<TreeDictionary<StationId, std::size_t>>();
-    if (solar)
+    ArraySequence<InterplanetaryNetwork::WeightedEdge> weighted(edges.GetLength());
+    for (std::size_t i = 0; i < edges.GetLength(); ++i)
     {
-        ArraySequence<InterplanetaryNetwork::WeightedEdge> weighted(edges.GetLength());
-        for (std::size_t i = 0; i < edges.GetLength(); ++i)
-        {
-            const auto& [first, second] = edges.Get(i);
-            weighted.Append({first, second, ChannelDistance(document->StationPosition(first),
-                                                            document->StationPosition(second))});
-        }
-        document->graph = InterplanetaryNetwork(vertices, weighted, std::move(dictionary),
-                                               CreateArraySequence, CreateArraySequence);
+        const auto& [first, second] = edges.Get(i);
+        double weight = solar ? ChannelDistance(document->StationPosition(first), document->StationPosition(second)) : 1.0;
+        weighted.Append({first, second, weight});
     }
-    else
-    {
-        document->graph = InterplanetaryNetwork(vertices, edges, std::move(dictionary),
-                                               CreateArraySequence, CreateArraySequence);
-    }
+    document->graph = InterplanetaryNetwork(vertices, weighted, std::make_unique<TreeDictionary<StationId, std::size_t>>(),
+                                           CreateArraySequence, CreateArraySequence);
     document->UpdateConnectivity();
     return document;
 }

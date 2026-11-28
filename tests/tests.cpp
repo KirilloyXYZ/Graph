@@ -43,9 +43,21 @@ namespace
     }
 
     template<typename Dictionary>
-    NumericGraph MakeNumericGraph(const Sequence<std::size_t>& vertices, const Sequence<NumericGraph::Edge>& edges)
+    NumericGraph MakeNumericGraph(const Sequence<std::size_t>& vertices, const Sequence<NumericGraph::WeightedEdge>& edges)
     {
         return NumericGraph(vertices, edges, std::make_unique<Dictionary>(), CreateArraySequence, CreateArraySequence);
+    }
+
+    template<typename Dictionary>
+    NumericGraph MakeNumericGraph(const GeneratedGraphData& data)
+    {
+        ArraySequence<NumericGraph::WeightedEdge> edges(data.edges.GetLength());
+        for (std::size_t i = 0; i < data.edges.GetLength(); ++i)
+        {
+            const auto& [first, second] = data.edges.Get(i);
+            edges.Append({first, second, 1.0});
+        }
+        return MakeNumericGraph<Dictionary>(data.vertices, edges);
     }
 
     template<typename T>
@@ -70,15 +82,15 @@ namespace
         {
             graph.AddVertex(key);
         }
-        graph.AddEdge(largest, 20);
-        graph.AddEdge(largest, 0);
-        graph.AddEdge(0, 15);
-        graph.AddEdge(20, 0);
+        graph.AddEdge(largest, 20, 1.0);
+        graph.AddEdge(largest, 0, 1.0);
+        graph.AddEdge(0, 15, 1.0);
+        graph.AddEdge(20, 0, 1.0);
         Check(graph.GetEdgeCount() == 4 && graph.ContainsEdge(0, largest), "Bidirectional edge lookup");
         CheckThrows<std::invalid_argument>([&]() { graph.AddVertex(20); });
-        CheckThrows<std::invalid_argument>([&]() { graph.AddEdge(0, largest); });
-        CheckThrows<std::invalid_argument>([&]() { graph.AddEdge(0, 0); });
-        CheckThrows<std::out_of_range>([&]() { graph.AddEdge(0, 2); });
+        CheckThrows<std::invalid_argument>([&]() { graph.AddEdge(0, largest, 1.0); });
+        CheckThrows<std::invalid_argument>([&]() { graph.AddEdge(0, 0, 1.0); });
+        CheckThrows<std::out_of_range>([&]() { graph.AddEdge(0, 2, 1.0); });
         CheckThrows<std::out_of_range>([&]() { graph.RemoveEdge(15, 20); });
         CheckThrows<std::out_of_range>([&]() { graph.ForEachNeighbor(2, [](std::size_t) {}); });
         Check(graph.GetVertexCount() == 4 && graph.GetEdgeCount() == 4, "Invalid edits preserve the graph");
@@ -104,7 +116,7 @@ namespace
         Check(!graph.ContainsEdge(largest, 0) && graph.GetNeighborCount(0) == 0, "Remove both copies of an edge");
 
         NumericGraph copy(graph);
-        copy.AddEdge(largest, 15);
+        copy.AddEdge(largest, 15, 1.0);
         Check(!graph.ContainsEdge(largest, 15), "Copy owns separate adjacency lists");
         auto assigned = MakeNumericGraph<Dictionary>();
         assigned = copy;
@@ -167,8 +179,8 @@ namespace
                 case 2:
                     if (u != v && present[u] && present[v] && !edges[u][v])
                     {
-                        tree.AddEdge(u, v);
-                        array.AddEdge(u, v);
+                        tree.AddEdge(u, v, 1.0);
+                        array.AddEdge(u, v, 1.0);
                         edges[u][v] = edges[v][u] = true;
                     }
                     break;
@@ -214,9 +226,9 @@ namespace
     void TestConstructionAndTraversals()
     {
         const std::size_t keys[] = {1, 2, 3, 4};
-        const NumericGraph::Edge cycle[] = {{1, 2}, {1, 3}, {2, 4}, {3, 4}};
+        const NumericGraph::WeightedEdge cycle[] = {{1, 2, 1}, {1, 3, 1}, {2, 4, 1}, {3, 4, 1}};
         ArraySequence<std::size_t> vertices(keys, 4);
-        ArraySequence<NumericGraph::Edge> edges(cycle, 4);
+        ArraySequence<NumericGraph::WeightedEdge> edges(cycle, 4);
         auto graph = MakeNumericGraph<Dictionary>(vertices, edges);
         CheckOrder<std::size_t>(Traverse(graph, 0, BFS), {1, 2, 3, 4});
         CheckOrder<std::size_t>(Traverse(graph, 0, DFS), {1, 2, 4, 3});
@@ -244,7 +256,7 @@ namespace
         graph.AddVertex(99);
         graph.AddVertex(98);
         graph.AddVertex(97);
-        graph.AddEdge(97, 98);
+        graph.AddEdge(97, 98, 1.0);
         for (auto method : {BFS, DFS})
         {
             auto components = FindConnectedComponents(graph, method);
@@ -276,11 +288,11 @@ namespace
         Check(singleton.status == SpanningTreeStatus::Found && singleton.edges.GetLength() == 0 &&
               singleton.order.GetLength() == 1 && *singleton.order.Get(0) == 11, "One-vertex spanning tree");
 
-        edges.Append({2, 1});
+        edges.Append({2, 1, 2});
         CheckThrows<std::invalid_argument>([&]() { MakeNumericGraph<Dictionary>(vertices, edges); });
-        edges.Get(4) = {2, 2};
+        edges.Get(4) = {2, 2, 1};
         CheckThrows<std::invalid_argument>([&]() { MakeNumericGraph<Dictionary>(vertices, edges); });
-        edges.Get(4) = {2, 9};
+        edges.Get(4) = {2, 9, 1};
         CheckThrows<std::out_of_range>([&]() { MakeNumericGraph<Dictionary>(vertices, edges); });
         edges.RemoveAt(4);
         vertices.Append(2);
@@ -323,14 +335,14 @@ namespace
                       "This test exercises a key that DynamicArray cannot store directly");
 
         const Key keys[] = {Key(11), Key(21), Key(31)};
-        const Graph<Key>::Edge edges[] = {{Key(15), Key(22)}, {Key(23), Key(31)}};
-        Graph<Key> graph(InputSequence<Key>(keys, 3), InputSequence<Graph<Key>::Edge>(edges, 2),
+        const Graph<Key>::WeightedEdge edges[] = {{Key(15), Key(22), 1}, {Key(23), Key(31), 1}};
+        Graph<Key> graph(InputSequence<Key>(keys, 3), InputSequence<Graph<Key>::WeightedEdge>(edges, 2),
                          std::make_unique<TreeDictionary<Key, std::size_t>>(CompareKey),
                          CreateArraySequence, CreateArraySequence);
 
         Check(graph.ContainsEdge(Key(19), Key(29)), "Lookup follows custom comparator");
         CheckThrows<std::invalid_argument>([&]() { graph.AddVertex(Key(19)); });
-        CheckThrows<std::invalid_argument>([&]() { graph.AddEdge(Key(11), Key(19)); });
+        CheckThrows<std::invalid_argument>([&]() { graph.AddEdge(Key(11), Key(19), 1.0); });
         auto tree = FindSpanningTree(graph, 0, CreateDFSEnumerator<Key>);
         Check(tree.edges.GetLength() == 2 && tree.order.Get(1)->value == 21, "Copy-constructible key in result");
         auto copy = graph;
@@ -396,20 +408,23 @@ namespace
 
         NumericGraph numeric(std::make_unique<ArrayStorage<std::size_t>>(), CreateArraySequence, CreateFailingSequence);
         for (std::size_t vertex : {1, 2, 3, 4}) { numeric.AddVertex(vertex); }
-        numeric.AddEdge(1, 3);
-        numeric.AddEdge(2, 4);
+        numeric.AddEdge(1, 3, 1.0);
+        numeric.AddEdge(2, 4, 1.0);
+        auto version = numeric.GetTopologyVersion();
         appendsBeforeFailure = 1;
-        CheckThrows<std::runtime_error>([&]() { numeric.AddEdge(1, 2); });
+        CheckThrows<std::runtime_error>([&]() { numeric.AddEdge(1, 2, 1.0); });
         appendsBeforeFailure = -1;
         Check(numeric.GetEdgeCount() == 2 && !numeric.ContainsEdge(1, 2) && !numeric.ContainsEdge(2, 1) &&
               numeric.GetNeighborCount(0) == 1 && numeric.GetNeighborCount(1) == 1 &&
-              numeric.ContainsEdge(1, 3) && numeric.ContainsEdge(2, 4), "Second append rolls back the first");
-        numeric.AddEdge(1, 2);
+              numeric.ContainsEdge(1, 3) && numeric.ContainsEdge(2, 4) &&
+              numeric.GetTopologyVersion() == version, "Second append rolls back the first");
+        numeric.AddEdge(1, 2, 1.0);
+        version = numeric.GetTopologyVersion();
         appendsBeforeFailure = 1;
         CheckThrows<std::runtime_error>([&]() { numeric.RemoveVertex(4); });
         appendsBeforeFailure = -1;
-        Check(numeric.GetVertexCount() == 4 && numeric.GetEdgeCount() == 3 && numeric.ContainsEdge(2, 4),
-              "Failed vertex rebuild preserves graph");
+        Check(numeric.GetVertexCount() == 4 && numeric.GetEdgeCount() == 3 && numeric.ContainsEdge(2, 4) &&
+              numeric.GetTopologyVersion() == version, "Failed vertex rebuild preserves graph");
         numeric.RemoveVertex(4);
         Check(!numeric.ContainsVertex(4) && numeric.GetEdgeCount() == 2, "Retry after failed rebuild");
     }
@@ -417,27 +432,38 @@ namespace
     template<typename Dictionary>
     void TestWeightedGraph()
     {
-        const std::size_t keys[]{10, 20, 30};
-        const NumericGraph::WeightedEdge edges[]{{10, 30, 4.5}, {20, 30, -2}};
-        NumericGraph graph(ArraySequence<std::size_t>(keys, 3), ArraySequence<NumericGraph::WeightedEdge>(edges, 2),
+        const std::size_t keys[]{10, 20, 30, 40};
+        const NumericGraph::WeightedEdge edges[]{{30, 20, -2}, {30, 40, 7}, {10, 30, 4.5}};
+        NumericGraph graph(ArraySequence<std::size_t>(keys, 4), ArraySequence<NumericGraph::WeightedEdge>(edges, 3),
                            std::make_unique<Dictionary>(), CreateArraySequence, CreateArraySequence);
-        Check(graph.GetNeighborWeight(0, 0) == 4.5 && graph.GetNeighborWeight(2, 0) == 4.5,
-              "Both adjacency entries carry the weight");
+        const double& originalWeight = graph.GetNeighborWeight(0, 0);
+        Check(originalWeight == 4.5 && &originalWeight == &graph.GetNeighborWeight(2, 2),
+              "Both adjacency entries refer to the same weight");
         Check(graph.GetEdgeWeight(20, 30) == -2 && graph.GetEdgeWeight(30, 20) == -2, "Weight lookup is symmetric");
         CheckThrows<std::invalid_argument>([&] { graph.AddEdge(30, 10, 100); });
         CheckThrows<std::out_of_range>([&] { graph.SetEdgeWeight(10, 20, 1); });
         CheckThrows<std::out_of_range>([&] { graph.GetEdgeWeight(10, 10); });
 
-        graph.AddEdge(10, 20);
-        Check(graph.GetEdgeWeight(10, 20) == 1, "Unit weight for an implicit edge");
+        graph.AddEdge(10, 20, 1.0);
+        Check(graph.GetEdgeWeight(10, 20) == 1, "Explicit unit weight");
         auto copy = graph;
+        const double& copiedWeight = copy.GetNeighborWeight(0, 0);
+        Check(copy.GetNeighborIndex(2, 0) == 1 && copy.GetNeighborIndex(2, 1) == 3 &&
+              copy.GetNeighborIndex(2, 2) == 0 &&
+              &copiedWeight == &copy.GetNeighborWeight(2, 2) && &copiedWeight != &originalWeight,
+              "Copy preserves neighbor order and shares an independent edge");
         copy.SetEdgeWeight(30, 10, 0);
-        Check(copy.GetNeighborWeight(0, 0) == 0 && copy.GetNeighborWeight(2, 0) == 0 &&
-              graph.GetEdgeWeight(10, 30) == 4.5, "Update changes both entries and keeps the original graph");
+        Check(copiedWeight == 0 && copy.GetEdgeWeight(30, 10) == 0 && originalWeight == 4.5,
+              "Updating the copy preserves edge identity and the original weight");
         copy.RemoveVertex(20);
-        Check(copy.GetNeighborIndex(0, 0) == 1 && copy.GetEdgeWeight(30, 10) == 0, "Reindexing preserves the weight");
+        Check(copy.GetNeighborIndex(0, 0) == 1 && copy.GetNeighborIndex(1, 0) == 2 &&
+              copy.GetNeighborIndex(1, 1) == 0 && copy.GetEdgeWeight(30, 10) == 0 &&
+              copy.GetEdgeWeight(30, 40) == 7 &&
+              &copy.GetNeighborWeight(0, 0) == &copy.GetNeighborWeight(1, 1),
+              "Reindexing preserves neighbor order and one shared weight");
         copy.RemoveEdge(10, 30);
-        Check(copy.GetEdgeCount() == 0 && copy.GetNeighborCount(0) == 0 && copy.GetNeighborCount(1) == 0,
+        Check(copy.GetEdgeCount() == 1 && copy.GetNeighborCount(0) == 0 && copy.GetNeighborCount(1) == 1 &&
+              copy.GetNeighborIndex(1, 0) == 2,
               "Weighted removal clears both entries");
 
         std::size_t seen = 0;
@@ -482,13 +508,13 @@ namespace
 
         for (std::size_t key : {2, 3, 4}) { graph.AddVertex(key); }
         graph.AddEdge(1, 2, CustomWeight({9}));
-        CustomWeight::copiesBeforeFailure = 1;
+        CustomWeight::copiesBeforeFailure = 0;
         CheckThrows<std::runtime_error>([&] { graph.AddEdge(1, 3, CustomWeight({0})); });
         Check(graph.GetEdgeCount() == 1 && !graph.ContainsEdge(1, 3), "Failed weight preparation leaves no half-edge");
         CheckThrows<std::runtime_error>([&] { graph.SetEdgeWeight(1, 2, CustomWeight({0})); });
         CustomWeight::copiesBeforeFailure = -1;
         Check(graph.GetNeighborWeight(0, 0).number == 9 && graph.GetNeighborWeight(1, 0).number == 9,
-              "Failed replacement keeps both weights");
+              "Failed replacement keeps the shared weight");
         graph.AddEdge(1, 3, CustomWeight({0}));
         graph.AddEdge(2, 3, CustomWeight({-2}));
         auto disconnected = FindMinimumSpanningTree(graph, compare);
@@ -508,6 +534,38 @@ namespace
         graph.SetEdgeWeight(2, 3, CustomWeight({8}));
         Check(tree.edges.Get(0).weight.number == -2 && graph.GetEdgeWeight(2, 3).number == 8,
               "Minimum spanning tree owns its weights");
+    }
+
+    struct SwapWeight
+    {
+        enum class Value { Short, Long };
+        Value value;
+
+        explicit SwapWeight(Value value) : value(value) { }
+        SwapWeight(const SwapWeight&) = default;
+        SwapWeight& operator=(const SwapWeight&) = delete;
+
+        friend void swap(SwapWeight& left, SwapWeight& right) noexcept
+        {
+            std::swap(left.value, right.value);
+        }
+    };
+
+    void TestWeightWithSwap()
+    {
+        using WeightedGraph = Graph<std::size_t, SwapWeight>;
+        const std::size_t keys[]{1, 2};
+        const WeightedGraph::WeightedEdge edges[]{{1, 2, SwapWeight(SwapWeight::Value::Short)}};
+        WeightedGraph graph(InputSequence<std::size_t>(keys, 2), InputSequence<WeightedGraph::WeightedEdge>(edges, 1),
+                            std::make_unique<TreeDictionary<std::size_t, std::size_t>>(),
+                            CreateArraySequence, CreateArraySequence);
+        auto copy = graph;
+        copy.SetEdgeWeight(2, 1, SwapWeight(SwapWeight::Value::Long));
+        Check(copy.GetEdgeWeight(1, 2).value == SwapWeight::Value::Long &&
+              graph.GetEdgeWeight(2, 1).value == SwapWeight::Value::Short,
+              "Weights with a nonthrowing swap can be updated without assignment");
+        copy.RemoveEdge(1, 2);
+        Check(copy.GetEdgeCount() == 0, "Removing a handle does not assign its weight");
     }
 
     void TestTraversalEnumerators()
@@ -536,6 +594,42 @@ namespace
             Check(cursor->MoveNext() && !cursor->MoveNext() && !cursor->MoveNext(), "Completed enumeration stays ended");
             CheckThrows<std::out_of_range>([&] { cursor->GetCurrent(); });
             CheckThrows<std::out_of_range>([&] { cursor->GetCurrentKey(); });
+        }
+    }
+
+    void TestTraversalInvalidation()
+    {
+        for (auto create : {BFS, DFS})
+        {
+            auto graph = MakeNumericGraph<ArrayStorage<std::size_t>>();
+            graph.AddVertex(1);
+            graph.AddVertex(2);
+            graph.AddEdge(1, 2, 1);
+            auto marks = graph_detail::CreateMarks(2);
+            auto cursor = create(graph, 0, marks);
+            Check(cursor->MoveNext(), "Traversal started");
+            graph.SetEdgeWeight(1, 2, -1);
+            CheckThrows<std::invalid_argument>([&]() { graph.AddEdge(2, 1, 5); });
+            Check(cursor->MoveNext() && cursor->GetCurrentKey() == 2,
+                  "Weight changes and rejected edits preserve traversal");
+            graph.RemoveEdge(1, 2);
+            CheckThrows<std::logic_error>([&]() { cursor->MoveNext(); });
+            CheckThrows<std::logic_error>([&]() { cursor->GetCurrent(); });
+            CheckThrows<std::logic_error>([&]() { cursor->GetCurrentKey(); });
+
+            auto target = graph;
+            auto targetMarks = graph_detail::CreateMarks(2);
+            auto targetCursor = create(target, 0, targetMarks);
+            auto sourceMarks = graph_detail::CreateMarks(2);
+            auto sourceCursor = create(graph, 0, sourceMarks);
+            target = graph;
+            CheckThrows<std::logic_error>([&]() { targetCursor->MoveNext(); });
+            Check(sourceCursor->MoveNext(), "Copy assignment preserves traversal of the source");
+            targetMarks.Get(0) = 0;
+            targetCursor = create(target, 0, targetMarks);
+            target = std::move(graph);
+            CheckThrows<std::logic_error>([&]() { targetCursor->MoveNext(); });
+            CheckThrows<std::logic_error>([&]() { sourceCursor->MoveNext(); });
         }
     }
 
@@ -586,7 +680,7 @@ namespace
         for (auto topology : {Topology::Chain, Topology::Cycle, Topology::Complete, Topology::Star, Topology::BinaryTree})
         {
             auto data = GenerateGraphData({topology, 7});
-            auto graph = MakeNumericGraph<Tree>(data.vertices, data.edges);
+            auto graph = MakeNumericGraph<Tree>(data);
             Check(graph.GetVertexCount() == 7 && graph.GetVertexKey(6) == 7, "Generated vertex labels");
             for (std::size_t u = 1; u <= 7; ++u)
             {
@@ -641,7 +735,7 @@ namespace
                       edge == repeated.edges.Get(i), "Random pairs are canonical and reproducible");
                 if (i != 0) { Check(data.edges.Get(i - 1) < edge, "No duplicate random pair"); }
             }
-            auto graph = MakeNumericGraph<Tree>(data.vertices, data.edges);
+            auto graph = MakeNumericGraph<Tree>(data);
             if (m < 9)
             {
                 Check(FindConnectedComponents(graph, DFS).componentEnds.GetLength() > 1, "Sparse random case disconnected");
@@ -652,11 +746,11 @@ namespace
     void TestLargeTraversals()
     {
         auto data = GenerateGraphData({Topology::Chain, 15000});
-        auto graph = MakeNumericGraph<TreeDictionary<std::size_t, std::size_t>>(data.vertices, data.edges);
+        auto graph = MakeNumericGraph<TreeDictionary<std::size_t, std::size_t>>(data);
         Check(Traverse(graph, 0, DFS).GetLength() == 15000, "Iterative DFS handles a deep chain");
         Check(FindSpanningTree(graph, 0, BFS).edges.GetLength() == 14999, "BFS on a large chain");
         auto isolated = GenerateGraphData({Topology::Random, 8000, 0, 3});
-        auto graphOfIsolates = MakeNumericGraph<TreeDictionary<std::size_t, std::size_t>>(isolated.vertices, isolated.edges);
+        auto graphOfIsolates = MakeNumericGraph<TreeDictionary<std::size_t, std::size_t>>(isolated);
         for (auto method : {BFS, DFS})
         {
             auto components = FindConnectedComponents(graphOfIsolates, method);
@@ -676,8 +770,8 @@ namespace
         network.AddVertex(start);
         network.AddVertex(earth);
         network.AddVertex(mars);
-        network.AddEdge(start, earth);
-        network.AddEdge(earth, mars);
+        network.AddEdge(start, earth, 1.0);
+        network.AddEdge(earth, mars, 1.0);
 
         Check(GetGeneratedStationId(15) == "S15", "Generated station identifier");
         Check(AnalyzeNetwork(network, CreateDFSEnumerator<StationId>).status == NetworkStatus::Connected, "Connected network");
@@ -820,7 +914,9 @@ int main()
         TestWeightedGraph<TreeDictionary<std::size_t, std::size_t>>();
         TestWeightedGraph<ArrayStorage<std::size_t>>();
         TestCustomWeightAndMinimumSpanningTree();
+        TestWeightWithSwap();
         TestTraversalEnumerators();
+        TestTraversalInvalidation();
         TestNetworkDesign();
         TestGeneration();
         TestLargeTraversals();
