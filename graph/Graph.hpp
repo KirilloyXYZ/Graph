@@ -7,7 +7,6 @@
 #include <memory>
 #include <optional>
 #include <stdexcept>
-#include <type_traits>
 #include <utility>
 
 #include "../lab1/ArraySequence.hpp"
@@ -19,7 +18,7 @@ class Graph
 {
 public:
     using Index = std::size_t;
-    struct WeightedEdge
+    struct WeightedEdge // пользователь не знает про индексы в графе а знает только ключ
     {
         Key first;
         Key second;
@@ -29,7 +28,7 @@ public:
     using Dictionary = IDictionary<Key, Index>;
 
 private:
-    struct EdgeRecord
+    struct EdgeRecord // как ребро хранится в самом графе через индексы и знает только о двух вершинах которые он соединяет
     {
         const Index first;
         const Index second;
@@ -38,10 +37,10 @@ private:
         EdgeRecord(Index first, Index second, const Weight& weight)
             : first(first), second(second), weight(weight) { }
 
-        Index OtherEnd(Index vertex) const noexcept { return vertex == first ? second : first; }
+        Index OtherEnd(Index vertex) const noexcept { return vertex == first ? second : first; } // Он определяет противоположный конец конкретного ребра, для которого был вызван
     };
 
-    using EdgeHandle = std::shared_ptr<EdgeRecord>;
+    using EdgeHandle = std::shared_ptr<EdgeRecord>; //shared_ptr обеспечивает совместное владение EdgeRecord
 
     struct Vertex
     {
@@ -61,7 +60,7 @@ private:
     SequenceFactory<EdgeHandle> createEdges;
     std::unique_ptr<Dictionary> indices;
     std::unique_ptr<Sequence<VertexHandle>> vertices;
-    std::size_t edgeCount = 0;
+    std::size_t edgeCount = 0; // у меня нету отдельного масива ребер , есть только список смежных ребер у каждой вершины
     std::size_t topologyVersion = 0;
 
     template<typename T>
@@ -335,7 +334,8 @@ const Weight& Graph<Key, Weight>::GetEdgeWeight(const Key& first, const Key& sec
 }
 
 template<typename Key, typename Weight>
-auto Graph<Key, Weight>::FindEdgePosition(const Sequence<EdgeHandle>& edges, Index vertex, Index neighbor) -> Index
+typename Graph<Key, Weight>::Index
+Graph<Key, Weight>::FindEdgePosition(const Sequence<EdgeHandle>& edges, Index vertex, Index neighbor)
 {
     Index count = edges.GetLength();
     for (Index i = 0; i < count; ++i)
@@ -346,7 +346,7 @@ auto Graph<Key, Weight>::FindEdgePosition(const Sequence<EdgeHandle>& edges, Ind
 }
 
 template<typename Key, typename Weight>
-auto Graph<Key, Weight>::FindEdgeBetween(Index first, Index second) const -> EdgeRecord*
+typename Graph<Key, Weight>::EdgeRecord* Graph<Key, Weight>::FindEdgeBetween(Index first, Index second) const
 {
     if (this->GetNeighborCount(first) > this->GetNeighborCount(second)) { std::swap(first, second); }
     const auto& edges = *this->GetVertex(first).edges;
@@ -355,7 +355,7 @@ auto Graph<Key, Weight>::FindEdgeBetween(Index first, Index second) const -> Edg
 }
 
 template<typename Key, typename Weight>
-auto Graph<Key, Weight>::RequireEdge(const Key& first, const Key& second) const -> EdgeRecord&
+typename Graph<Key, Weight>::EdgeRecord& Graph<Key, Weight>::RequireEdge(const Key& first, const Key& second) const
 {
     Index u = this->RequireVertex(first);
     Index v = this->RequireVertex(second);
@@ -437,7 +437,8 @@ void Graph<Key, Weight>::AppendEdge(Index first, Index second, const Weight& wei
     auto& left = *this->GetVertex(first).edges;
     auto& right = *this->GetVertex(second).edges;
     Index position = left.GetLength();
-    auto [u, v] = std::minmax(first, second);
+    Index u = std::min(first, second);
+    Index v = std::max(first, second);
     auto edge = std::make_shared<EdgeRecord>(u, v, weight);
     left.Append(edge);
     try { right.Append(edge); }
@@ -467,19 +468,7 @@ void Graph<Key, Weight>::AddEdge(const Key& first, const Key& second, const Weig
 template<typename Key, typename Weight>
 void Graph<Key, Weight>::SetEdgeWeight(const Key& first, const Key& second, const Weight& weight)
 {
-    auto& edge = this->RequireEdge(first, second);
-    Weight updated(weight);
-    if constexpr (std::is_nothrow_copy_assignable_v<Weight>)
-    {
-        edge.weight = std::as_const(updated);
-    }
-    else
-    {
-        static_assert(std::is_nothrow_swappable_v<Weight>,
-                      "SetEdgeWeight requires nonthrowing copy assignment or swap");
-        using std::swap;
-        swap(edge.weight, updated);
-    }
+    this->RequireEdge(first, second).weight = weight;
 }
 
 template<typename Key, typename Weight>

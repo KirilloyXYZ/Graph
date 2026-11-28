@@ -10,7 +10,7 @@
 
 #include "InterplanetaryNetwork.hpp"
 #include "../generator/GraphGenerator.hpp"
-#include "../graph/MinimumSpanningTree.hpp"
+#include "../graph/GraphAlgorithms.hpp"
 #include "../lab2/TreeDictionary.hpp"
 
 struct WorldPoint

@@ -17,15 +17,13 @@ struct TraversalStep
     std::optional<std::size_t> parent;
 };
 
-using TraversalMarks = ArraySequence<unsigned char>;
+using TraversalMarks = ArraySequence<bool>;
 
 template<typename Key, typename Weight = double>
-using TraversalFactory = std::unique_ptr<IEnumerator<TraversalStep, Key>> (*)(
-    const Graph<Key, Weight>&, std::size_t, TraversalMarks&);
+using TraversalFactory = std::unique_ptr<IEnumerator<TraversalStep, Key>> (*) (const Graph<Key, Weight>&, std::size_t, TraversalMarks&);
 
 namespace graph_detail
 {
-    // The graph and marks outlive the enumerator.
     template<typename Key, typename Weight>
     class TraversalEnumerator : public IEnumerator<TraversalStep, Key>
     {
@@ -47,7 +45,7 @@ namespace graph_detail
 
         bool Discover(std::size_t vertex, std::optional<std::size_t> parent)
         {
-            marks.Get(vertex) = 1;
+            marks.Get(vertex) = true;
             current = TraversalStep{vertex, parent};
             return true;
         }

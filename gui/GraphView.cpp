@@ -396,7 +396,7 @@ void GraphView::StartAnalysis(GuiTask& job)
         throw std::invalid_argument("Выберите начальную вершину.");
     }
     auto compute = [source, chosen = action, traversal = Traversals[traversalChoice], seed](
-                       const std::function<bool()>& shouldStop) -> std::shared_ptr<Analysis>
+                       const std::function<bool()>& shouldStop)
     {
         auto result = std::make_shared<Analysis>();
         result->action = chosen;

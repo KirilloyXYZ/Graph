@@ -511,10 +511,10 @@ namespace
         CustomWeight::copiesBeforeFailure = 0;
         CheckThrows<std::runtime_error>([&] { graph.AddEdge(1, 3, CustomWeight({0})); });
         Check(graph.GetEdgeCount() == 1 && !graph.ContainsEdge(1, 3), "Failed weight preparation leaves no half-edge");
-        CheckThrows<std::runtime_error>([&] { graph.SetEdgeWeight(1, 2, CustomWeight({0})); });
+        graph.SetEdgeWeight(1, 2, CustomWeight({10}));
         CustomWeight::copiesBeforeFailure = -1;
-        Check(graph.GetNeighborWeight(0, 0).number == 9 && graph.GetNeighborWeight(1, 0).number == 9,
-              "Failed replacement keeps the shared weight");
+        Check(graph.GetNeighborWeight(0, 0).number == 10 && graph.GetNeighborWeight(1, 0).number == 10,
+              "Updating the shared weight uses assignment without copy construction");
         graph.AddEdge(1, 3, CustomWeight({0}));
         graph.AddEdge(2, 3, CustomWeight({-2}));
         auto disconnected = FindMinimumSpanningTree(graph, compare);
@@ -536,34 +536,27 @@ namespace
               "Minimum spanning tree owns its weights");
     }
 
-    struct SwapWeight
+    struct NonAssignableWeight
     {
-        enum class Value { Short, Long };
+        enum class Value { Short };
         Value value;
 
-        explicit SwapWeight(Value value) : value(value) { }
-        SwapWeight(const SwapWeight&) = default;
-        SwapWeight& operator=(const SwapWeight&) = delete;
-
-        friend void swap(SwapWeight& left, SwapWeight& right) noexcept
-        {
-            std::swap(left.value, right.value);
-        }
+        explicit NonAssignableWeight(Value value) : value(value) { }
+        NonAssignableWeight(const NonAssignableWeight&) = default;
+        NonAssignableWeight& operator=(const NonAssignableWeight&) = delete;
     };
 
-    void TestWeightWithSwap()
+    void TestNonAssignableWeight()
     {
-        using WeightedGraph = Graph<std::size_t, SwapWeight>;
+        using WeightedGraph = Graph<std::size_t, NonAssignableWeight>;
         const std::size_t keys[]{1, 2};
-        const WeightedGraph::WeightedEdge edges[]{{1, 2, SwapWeight(SwapWeight::Value::Short)}};
+        const WeightedGraph::WeightedEdge edges[]{{1, 2, NonAssignableWeight(NonAssignableWeight::Value::Short)}};
         WeightedGraph graph(InputSequence<std::size_t>(keys, 2), InputSequence<WeightedGraph::WeightedEdge>(edges, 1),
                             std::make_unique<TreeDictionary<std::size_t, std::size_t>>(),
                             CreateArraySequence, CreateArraySequence);
         auto copy = graph;
-        copy.SetEdgeWeight(2, 1, SwapWeight(SwapWeight::Value::Long));
-        Check(copy.GetEdgeWeight(1, 2).value == SwapWeight::Value::Long &&
-              graph.GetEdgeWeight(2, 1).value == SwapWeight::Value::Short,
-              "Weights with a nonthrowing swap can be updated without assignment");
+        Check(copy.GetEdgeWeight(2, 1).value == NonAssignableWeight::Value::Short,
+              "Copying an edge only requires copy construction of its weight");
         copy.RemoveEdge(1, 2);
         Check(copy.GetEdgeCount() == 0, "Removing a handle does not assign its weight");
     }
@@ -625,7 +618,7 @@ namespace
             target = graph;
             CheckThrows<std::logic_error>([&]() { targetCursor->MoveNext(); });
             Check(sourceCursor->MoveNext(), "Copy assignment preserves traversal of the source");
-            targetMarks.Get(0) = 0;
+            targetMarks.Get(0) = false;
             targetCursor = create(target, 0, targetMarks);
             target = std::move(graph);
             CheckThrows<std::logic_error>([&]() { targetCursor->MoveNext(); });
@@ -914,7 +907,7 @@ int main()
         TestWeightedGraph<TreeDictionary<std::size_t, std::size_t>>();
         TestWeightedGraph<ArrayStorage<std::size_t>>();
         TestCustomWeightAndMinimumSpanningTree();
-        TestWeightWithSwap();
+        TestNonAssignableWeight();
         TestTraversalEnumerators();
         TestTraversalInvalidation();
         TestNetworkDesign();
